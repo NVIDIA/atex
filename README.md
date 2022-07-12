@@ -1,8 +1,8 @@
-# NVIDIA/atex: A Tensorflow Extension
+# NVIDIA/Atex: A TensorFlow Extension
 
 This repository holds NVIDIA-maintained utilities to streamline faster training
-and inference in Tensorflow. Some of the code here will be included in upstream
-Tensorflow eventually. The intent of Atex is to make up-to-date utilities
+and inference in TensorFlow. Some of the code here will be included in upstream
+TensorFlow eventually. The intent of Atex is to make up-to-date utilities
 available to users as quickly as possible.
 
 ## Contents
