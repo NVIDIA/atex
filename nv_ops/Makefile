@@ -27,7 +27,7 @@ $(IN_GPU_ONLY_TARGET_LIB): nv_norms/cc/kernels/fused_instance_norm_op.cu.cc
 	$(NVCC) -std=c++14 -c -o $@ $^  $(TF_CFLAGS) -D GOOGLE_CUDA=1 -x cu -Xcompiler -fPIC -DNDEBUG --expt-relaxed-constexpr
 
 $(TARGET_LIB): $(LN_SRCS) $(IN_SRCS) $(LN_GPU_ONLY_TARGET_LIB) $(IN_GPU_ONLY_TARGET_LIB)
-	$(CXX) $(CFLAGS) -o $@ $^ ${LDFLAGS}  -D GOOGLE_CUDA=1  -I/usr/local/cuda/include -L/usr/local/cuda/targets/x86_64-linux/lib -lcudart
+	$(CXX) $(CFLAGS) -o $@ $^ ${LDFLAGS}  -D GOOGLE_CUDA=1  -I/usr/local/cuda/include -L/usr/local/cuda/lib64 -lcudart
 
 layer_norm_test: nv_norms/python/ops/fused_layer_norm_ops_test.py nv_norms/python/ops/nv_norm_ops.py $(TARGET_LIB)
 	$(PYTHON_BIN_PATH) nv_norms/python/ops/fused_layer_norm_ops_test.py
