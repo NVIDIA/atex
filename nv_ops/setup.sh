@@ -3,9 +3,13 @@
 # ==============================================================================
 
 # Setup the include path for building dynamic library.
-mkdir -p /usr/local/lib/python3.8/dist-packages/tensorflow/include/third_party/gpus/cuda
+if [[ -z "${PYVER}" ]]; then
+  echo "Unknown python version: PYVER"; exit 1;
+fi
 
-ln -s /usr/local/cuda/include /usr/local/lib/python3.8/dist-packages/tensorflow/include/third_party/gpus/cuda
+mkdir -p /usr/local/lib/python${PYVER}/dist-packages/tensorflow/include/third_party/gpus/cuda
+
+ln -s /usr/local/cuda/include /usr/local/lib/python${PYVER}/dist-packages/tensorflow/include/third_party/gpus/cuda
 
 # Build the wheel.
 make nv_norms_pip_pkg

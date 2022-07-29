@@ -1,7 +1,7 @@
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 # ==============================================================================
 
-"""Tests for time_two ops."""
+"""Tests for fused layer norm ops."""
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -43,10 +43,10 @@ def layer_norm_grad_np(x, dy, gamma, cache):
   return dgamma, dbeta, dx
 
 class FusedLayerNormTest(test.TestCase):
-  def _runForward(self, x_shape, epsilon=0.001):
+  def _runForward(self, x_shape, data_dtype, epsilon=0.001):
     feature_dim = [i for i in range(1, len(x_shape))]
     x = tf.random.uniform(shape=x_shape, minval=10.0,
-                          maxval=1000.0, dtype=tf.float16)
+                          maxval=1000.0, dtype=data_dtype)
     gamma = tf.constant(np.random.normal(size=x_shape[1:]), dtype=tf.float32)
     beta = tf.constant(np.random.normal(size=x_shape[1:]), dtype=tf.float32)
     ref_ln = tf.keras.layers.LayerNormalization(axis=feature_dim,
@@ -61,14 +61,14 @@ class FusedLayerNormTest(test.TestCase):
     self.assertAllClose(mean, mean_ref, rtol=0.01, atol=0.01)
     self.assertAllClose(inv_var, 1./var_ref, rtol=0.01, atol=0.01)
 
-  def _runBackward(self, x_shape, epsilon=0.001):
+  def _runBackward(self, x_shape, data_dtype, epsilon=0.001):
     feature_dim = tuple(range(1, len(x_shape)))
     x_np = np.random.normal(size=x_shape)
     dy_np = np.random.normal(size=x_shape)
     gamma_np = np.random.normal(size=x_shape[1:])
 
-    x = tf.constant(x_np, dtype=tf.float16)
-    dy = tf.constant(dy_np, dtype=tf.float16)
+    x = tf.constant(x_np, dtype=data_dtype)
+    dy = tf.constant(dy_np, dtype=data_dtype)
     gamma = tf.constant(gamma_np, dtype=tf.float32)
     mean, var = tf.nn.moments(x, axes=feature_dim)
     inv_var = 1. / var
@@ -87,13 +87,14 @@ class FusedLayerNormTest(test.TestCase):
   @test_util.run_gpu_only
   def testFusedLayerNorm(self):
     with self.cached_session(use_gpu=True) as sess:
-      for x_rank in (2, 3,):
-        for N in (2, 8,):
-          for D_exp in (4, 8, 10, 18, 19):
-            x_shape = [N] * (x_rank - 1)
-            x_shape.append(2 ** D_exp)
-            self._runForward(x_shape)
-            self._runBackward(x_shape)
+      for dtype in (tf.float32, tf.float16):
+        for x_rank in (2, 3,):
+          for N in (1, 2, 5, 8,):
+            for D_exp in (4, 8, 10, 15, 18, 19,):
+              x_shape = [N] * (x_rank - 1)
+              x_shape.append(2 ** D_exp)
+              self._runForward(x_shape, dtype)
+              self._runBackward(x_shape, dtype)
       
   @test_util.run_gpu_only
   def testFusedLayerNormEmptyInput(self):

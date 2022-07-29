@@ -1,7 +1,7 @@
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 # ==============================================================================
 
-"""Use fused instance norm ops in python."""
+"""Use fused layer and instance norm ops in python."""
 
 from __future__ import absolute_import
 from __future__ import division

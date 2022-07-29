@@ -1,7 +1,7 @@
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 # ==============================================================================
 
-"""Tests for time_two ops."""
+"""Tests for fused instance norm ops."""
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
