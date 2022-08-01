@@ -33,10 +33,8 @@ it as:
 
 ```bash
 # bash setup.sh
-<...>
-Ran 5 tests in 4.131s
+<...> === Output wheel file is in: <...>/nv_ops/artifacts
 
-OK (skipped=1)
 # pip install artifacts/*.whl
 <...>
 Successfully installed tensorflow-nv-norms-0.0.1

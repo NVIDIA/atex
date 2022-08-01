@@ -14,6 +14,3 @@ ln -s /usr/local/cuda/include /usr/local/lib/python${PYVER}/dist-packages/tensor
 # Build the wheel.
 make nv_norms_pip_pkg
 
-# Run the python test.
-make layer_norm_test
-make instance_norm_test
