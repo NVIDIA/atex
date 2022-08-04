@@ -13,17 +13,53 @@
 namespace tensorflow {
 
 namespace shape_inference {
+
+namespace {
+Status GetBatchAndFeatureSizes(shape_inference::InferenceContext* c,
+                               const ShapeHandle& x_shape, int* num_batches,
+                               int* num_features) {
+  std::vector<int> axis;
+  TF_RETURN_IF_ERROR(c->GetAttr("axis", &axis));
+
+  const int rank = c->Rank(x_shape);
+  std::vector<int> processed_axis;
+
+  for (auto a : axis) {
+    int positive_axis = a < 0 ? rank + a : a;
+    if (positive_axis < 0 || positive_axis >= rank) {
+      return errors::InvalidArgument("axis contains invalid value: ", a);
+    }
+    processed_axis.push_back(positive_axis);
+  }
+  std::sort(processed_axis.begin(), processed_axis.end());
+  processed_axis.erase(
+      std::unique(processed_axis.begin(), processed_axis.end()),
+      processed_axis.end());
+  if (processed_axis[0] != rank - processed_axis.size()) {
+    return errors::InvalidArgument("axis is not packed from last dim.");
+  }
+
+  *num_features = 1;
+  *num_batches = 1;
+  for (int i = 0; i < rank; i++) {
+    if (!processed_axis.empty() && i >= processed_axis[0]) {
+      *num_features *= c->Value(c->Dim(x_shape, i));
+    } else {
+      *num_batches *= c->Value(c->Dim(x_shape, i));
+    }
+  }
+  return Status::OK();
+}
+}  // namespace
+
 Status FusedLayerNormShape(shape_inference::InferenceContext* c) {
   ShapeHandle x_shape;
   TF_RETURN_IF_ERROR(c->WithRankAtLeast(c->input(0), 1, &x_shape));
 
-  // For the input tensor, the first dim is the batch and the remaining dims are
-  // the features. There is no batch dim for 1D tensors.
-  const int x_rank = c->Rank(x_shape);
-  int num_batches = 1;
-  if (x_rank > 1) {
-    num_batches = c->Value(c->Dim(x_shape, 0));
-  }
+  int num_batches;
+  int num_features;
+  TF_RETURN_IF_ERROR(
+      GetBatchAndFeatureSizes(c, x_shape, &num_batches, &num_features));
   const DimensionHandle batch_dim = c->MakeDim(num_batches);
 
   c->set_output(0, x_shape);
@@ -36,15 +72,11 @@ Status FusedLayerNormGradShape(shape_inference::InferenceContext* c) {
   ShapeHandle x_shape;
   TF_RETURN_IF_ERROR(c->WithRankAtLeast(c->input(1), 1, &x_shape));
 
-  // For the input tensor, the first dim is the batch and the remaining dims are
-  // the features. There is no batch dim for 1D tensors.
-  const int x_rank = c->Rank(x_shape);
-  int num_features = c->Value(c->Dim(x_shape, x_rank - 1));
-  if (x_rank > 1) {
-    for (int i = x_rank - 2; i >= 1; i--) {
-      num_features *= c->Value(c->Dim(x_shape, i));
-    }
-  }
+  int num_batches;
+  int num_features;
+  TF_RETURN_IF_ERROR(
+      GetBatchAndFeatureSizes(c, x_shape, &num_batches, &num_features));
+
   const DimensionHandle channel_dim = c->MakeDim(num_features);
 
   c->set_output(0, x_shape);
@@ -107,6 +139,7 @@ REGISTER_OP("FusedLayerNorm")
     .Attr("T: {half, float}")
     .Attr("U: {float}")
     .Attr("epsilon: float = 0.001")
+    .Attr("axis: list(int) = [-1]")
     .SetShapeFn(shape_inference::FusedLayerNormShape);
 
 REGISTER_OP("FusedLayerNormGrad")
@@ -121,6 +154,7 @@ REGISTER_OP("FusedLayerNormGrad")
     .Attr("T: {half, float}")
     .Attr("U: {float}")
     .Attr("epsilon: float = 0.001")
+    .Attr("axis: list(int) = [-1]")
     .SetShapeFn(shape_inference::FusedLayerNormGradShape);
 
 REGISTER_OP("FusedInstanceNorm")

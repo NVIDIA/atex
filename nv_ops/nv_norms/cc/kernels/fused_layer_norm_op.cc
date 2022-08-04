@@ -248,6 +248,40 @@ DECLARE_GPU_SPEC(Eigen::half, float);
 
 }  // namespace functor
 
+namespace {
+Status GetBatchAndFeatureSizes(const Tensor& x, const std::vector<int>& axis,
+                               int64_t* num_batches, int64_t* num_features) {
+  int rank = x.dims();
+  std::vector<int> processed_axis;
+
+  for (auto a : axis) {
+    int positive_axis = a < 0 ? rank + a : a;
+    if (positive_axis < 0 || positive_axis >= rank) {
+      return errors::InvalidArgument("axis contains invalid value: ", a);
+    }
+    processed_axis.push_back(positive_axis);
+  }
+  std::sort(processed_axis.begin(), processed_axis.end());
+  processed_axis.erase(
+      std::unique(processed_axis.begin(), processed_axis.end()),
+      processed_axis.end());
+  if (processed_axis[0] != rank - processed_axis.size()) {
+    return errors::InvalidArgument("axis is not packed from last dim.");
+  }
+
+  *num_features = 1;
+  *num_batches = 1;
+  for (int i = 0; i < rank; i++) {
+    if (!processed_axis.empty() && i >= processed_axis[0]) {
+      *num_features *= x.dim_size(i);
+    } else {
+      *num_batches *= x.dim_size(i);
+    }
+  }
+  return Status::OK();
+}
+}  // namespace
+
 template <typename Device, typename T, typename U>
 class FusedLayerNormOp : public OpKernel {
  public:
@@ -255,6 +289,7 @@ class FusedLayerNormOp : public OpKernel {
     float epsilon;
     OP_REQUIRES_OK(context, context->GetAttr("epsilon", &epsilon));
     epsilon_ = U(epsilon);
+    OP_REQUIRES_OK(context, context->GetAttr("axis", &axis_));
   }
 
   void Compute(OpKernelContext* context) override {
@@ -266,16 +301,10 @@ class FusedLayerNormOp : public OpKernel {
                 errors::InvalidArgument("input must be at least 1-dimensional",
                                         x_input.shape().DebugString()));
 
-    // For the input tensor, the first dim is the batch and the remaining dims
-    // are the features. There is no batch dim for 1D tensors.
-    int64_t num_batches = 1;
-    int64_t num_features = x_input.dim_size(x_input.dims() - 1);
-    if (x_input.dims() > 1) {
-      num_batches = x_input.dim_size(0);
-      for (int i = x_input.dims() - 2; i >= 1; i--) {
-        num_features *= x_input.dim_size(i);
-      }
-    }
+    int64_t num_batches;
+    int64_t num_features;
+    OP_REQUIRES_OK(context, GetBatchAndFeatureSizes(
+                                x_input, axis_, &num_batches, &num_features));
 
     OP_REQUIRES(context, scale_input.NumElements() == num_features,
                 errors::InvalidArgument(
@@ -324,6 +353,7 @@ class FusedLayerNormOp : public OpKernel {
 
  private:
   U epsilon_;
+  std::vector<int> axis_;
 };
 
 template <typename Device, typename T, typename U>
@@ -334,6 +364,7 @@ class FusedLayerNormGradOp : public OpKernel {
     float epsilon;
     OP_REQUIRES_OK(context, context->GetAttr("epsilon", &epsilon));
     epsilon_ = U(epsilon);
+    OP_REQUIRES_OK(context, context->GetAttr("axis", &axis_));
   }
 
   void Compute(OpKernelContext* context) override {
@@ -362,16 +393,10 @@ class FusedLayerNormGradOp : public OpKernel {
             "x and y_backprop must have same shape, but x has shape ",
             x.shape(), " and y_backprop has shape ", y_backprop.shape()));
 
-    // For the input tensor, the first dim is the batch and the remaining dims
-    // are the features. There is no batch dim for 1D tensors.
-    int64_t num_batches = 1;
-    int64_t num_features = x.dim_size(x.dims() - 1);
-    if (x.dims() > 1) {
-      num_batches = x.dim_size(0);
-      for (int i = x.dims() - 2; i >= 1; i--) {
-        num_features *= x.dim_size(i);
-      }
-    }
+    int64_t num_batches;
+    int64_t num_features;
+    OP_REQUIRES_OK(context, GetBatchAndFeatureSizes(x, axis_, &num_batches,
+                                                    &num_features));
 
     OP_REQUIRES(
         context, scale.NumElements() == num_features,
@@ -434,6 +459,7 @@ class FusedLayerNormGradOp : public OpKernel {
 
  private:
   U epsilon_;
+  std::vector<int> axis_;
 };
 
 #define REGISTER_KERNELS(D, T, U)                             \

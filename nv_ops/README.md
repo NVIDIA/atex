@@ -110,3 +110,10 @@ y, _, _ = nv_norms.fused_instance_norm(
 ```
 A legal value of optional argument `data_format` is taken from ("N...C", "NC...", "NCHW", "NHWC", "NDHWC", "NCDHW"),
 where `'NHWC'` is the default.
+
+### Limitations
+
+* The `axis` argument can accept a list/tuple of integers. Typically this is the
+  features axis/axes. The left-out axes are typically the batch axis/axes. This
+  argument defaults to `[-1]`. We only support a list of packed axes that must
+  include the last dimension, e.g., `[-3, -2, -1]` but not `[-3, -1]`. 
