@@ -7,7 +7,6 @@ from __future__ import division
 from __future__ import print_function
 
 import itertools
-import os
 import numpy as np
 import tensorflow as tf
 
@@ -63,11 +62,6 @@ def layer_norm_grad_np(x, dy, gamma, cache, axis):
   return dgamma, dbeta, dx
 
 class NvNormsLayerNormOpTest(test.TestCase):
-  def setUp(self):
-    # TODO(kaixih): we've found the tests will fail with cuda_malloc_async on
-    # GPUs with 16GB.
-    os.environ['TF_GPU_ALLOCATOR'] = ''
-
   def _runForward(self, x_shape, data_dtype, axis, epsilon=0.001):
     validated_axis = sorted(set([i % len(x_shape) for i in axis]))
     weight_shape = [x_shape[i] for i in validated_axis]
@@ -162,11 +156,6 @@ class NvNormsLayerNormOpTest(test.TestCase):
       self.assertAllEqual(dbeta.shape, [0])
 
 class NvNormsLayerNormLayerTest(test.TestCase):
-  def setUp(self):
-    # TODO(kaixih): we've found the tests will fail with cuda_malloc_async on
-    # GPUs with 16GB.
-    os.environ['TF_GPU_ALLOCATOR'] = ''
-
   def _runForward(self, x_shape, data_dtype, axis, epsilon=0.001):
     if isinstance(axis, int):
       weight_shape = x_shape[axis]

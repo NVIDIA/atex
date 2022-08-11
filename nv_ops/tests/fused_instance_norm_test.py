@@ -7,7 +7,6 @@ from __future__ import division
 from __future__ import print_function
 
 import numpy as np
-import os
 import tensorflow as tf
 import tensorflow_addons as tfa
 
@@ -73,11 +72,6 @@ def get_input_shape(N, C, D, x_rank, axis):
   return x_shape
 
 class FusedInstanceNormOpTest(test.TestCase):
-  def setUp(self):
-    # TODO(kaixih): we've found the tests will fail with cuda_malloc_async on
-    # GPUs with 16GB.
-    os.environ['TF_GPU_ALLOCATOR'] = ''
-
   def _runForward(self, x_shape, axis, epsilon=0.001):
     assert axis in (1, -1)
     x = tf.random.uniform(shape=x_shape, minval=10.0,
@@ -188,11 +182,6 @@ class FusedInstanceNormOpTest(test.TestCase):
       self.assertAllEqual(dbeta.shape, [0])
 
 class FusedInstanceNormLayerTest(test.TestCase):
-  def setUp(self):
-    # TODO(kaixih): we've found the tests will fail with cuda_malloc_async on
-    # GPUs with 16GB.
-    os.environ['TF_GPU_ALLOCATOR'] = ''
-
   def _runForward(self, x_shape, axis, epsilon=0.001):
     assert axis in (1, -1)
     x = tf.random.uniform(shape=x_shape, minval=10.0,
