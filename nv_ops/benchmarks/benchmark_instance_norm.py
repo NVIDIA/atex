@@ -13,7 +13,7 @@ def benchmark_fn(input_shape, use_nv_ops, axis=-1):
   repeat = 20
   instanceN = tfa.layers.InstanceNormalization(axis=axis)
   if use_nv_ops:
-    instanceN = nv_norms.FusedInstanceNorm(axis=axis)
+    instanceN = nv_norms.InstanceNormalization(axis=axis)
 
   def train_step(x):
     with tf.GradientTape() as tape:
@@ -54,9 +54,14 @@ input_shapes = [
     (4, 256, 32),
     (8, 256, 32),
 ]
+def get_shape(x, channel_last):
+  if channel_last:
+    return (x[0], x[2], x[2], x[2], x[1])
+  else:
+    return (x[0], x[1], x[2], x[2], x[2])
+
 for input_shape in input_shapes:
-  def sw(x): return (x[0], x[2], x[2], x[2], x[1])
-  expanded_shape = sw(input_shape)
+  expanded_shape = get_shape(input_shape, True)
   time_tf = benchmark_fn(expanded_shape, False, axis=-1)
   time_nv = benchmark_fn(expanded_shape, True, axis=-1)
   print("Input: {} Time(ms): TF: {:0.2f} NV: {:0.2f}".format(
@@ -64,10 +69,10 @@ for input_shape in input_shapes:
 print("End of channel last layout.")
 
 for input_shape in input_shapes:
-  def sw(x): return (x[0], x[1], x[2], x[2], x[2])
-  expanded_shape = sw(input_shape)
+  expanded_shape = get_shape(input_shape, False)
   time_tf = benchmark_fn(expanded_shape, False, axis=1)
   time_nv = benchmark_fn(expanded_shape, True, axis=1)
   print("Input: {} Time(ms): TF: {:0.2f} NV: {:0.2f}".format(
       expanded_shape, time_tf, time_nv))
 print("End of channel first layout.")
+

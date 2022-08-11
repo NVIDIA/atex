@@ -6,16 +6,14 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import itertools
 import numpy as np
 import tensorflow as tf
 import tensorflow_addons as tfa
 
 from tensorflow.python.framework import test_util
-from tensorflow.python.ops import array_ops
 from tensorflow.python.platform import test
 
-from nv_norms import FusedInstanceNorm
+from nv_norms import InstanceNormalization
 from nv_norms import fused_instance_norm_op, fused_instance_norm_grad_op
 
 
@@ -200,7 +198,7 @@ class FusedInstanceNormLayerTest(test.TestCase):
     instanceN_ref.set_weights([gamma, beta])
     y_ref = instanceN_ref(x)
 
-    instanceN = FusedInstanceNorm(axis=axis)
+    instanceN = InstanceNormalization(axis=axis)
     instanceN.build(input_shape=x_shape)
     instanceN.set_weights([gamma, beta])
     y = instanceN(x)
@@ -214,8 +212,8 @@ class FusedInstanceNormLayerTest(test.TestCase):
                         dtype=tf.float32)
     beta = tf.constant(np.random.normal(size=x_shape[axis]),
                        dtype=tf.float32)
-  
-    instanceN = FusedInstanceNorm(axis=axis)
+
+    instanceN = InstanceNormalization(axis=axis)
     instanceN.build(input_shape=x_shape)
     instanceN.set_weights([gamma, beta])
 
@@ -251,3 +249,4 @@ class FusedInstanceNormLayerTest(test.TestCase):
 
 if __name__ == '__main__':
   test.main()
+

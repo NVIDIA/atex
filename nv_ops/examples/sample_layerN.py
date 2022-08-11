@@ -18,7 +18,7 @@ use_nv_norms = True if args.nvops else False
 conv2d = layers.Conv2D(k, (r, s), padding='same')
 layerN = layers.LayerNormalization(axis=(1, 2, 3))
 if use_nv_norms:
-  layerN = nv_norms.FusedLayerNorm(axis=(1, 2, 3))
+  layerN = nv_norms.LayerNormalization(axis=(1, 2, 3))
 
 def model():
   x = layers.Input(shape=(H, W, C), batch_size=None)

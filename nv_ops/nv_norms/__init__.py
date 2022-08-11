@@ -9,6 +9,6 @@ from nv_norms.python.ops.nv_norm_ops import fused_instance_norm_op
 from nv_norms.python.ops.nv_norm_ops import fused_instance_norm_grad_op
 from nv_norms.python.ops.nv_norm_ops import _layer_norm_grad
 from nv_norms.python.ops.nv_norm_ops import _instance_norm_grad
-from nv_norms.python.ops.nv_norm_ops import FusedLayerNorm
-from nv_norms.python.ops.nv_norm_ops import FusedInstanceNorm
+from nv_norms.python.ops.nv_norm_ops import LayerNormalization
+from nv_norms.python.ops.nv_norm_ops import InstanceNormalization
 

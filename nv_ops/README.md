@@ -8,20 +8,21 @@ improve the performance.
 
 ## Expected Performance
 
-Typically, the normalization can be described as two parts: (1) computing the
-mean/variance and normalizing the input; (2) scaling and offsetting the output
-of (1). The `tf.keras.layers.LayerNormalization` has already used the CuDNN for
-the first part but not the second part due to some dimension restrictions of
-CuDNN. In comparison, our implementation can achieve up to 18x speedups. A
-detailed performance analysis can be found
-[here](https://docs.google.com/spreadsheets/d/1KM3VlGL3GqjV_o7iSKHqBHhkry6Ha0OmYKtHl1_I7wA/edit?usp=sharing).
+Typically, the normalization can be described in two parts: (1) Computing the
+mean/variance and normalizing the input; (2) Scaling and offsetting the output
+from (1). `tf.keras.layers.LayerNormalization` relies on the CuDNN
+BatchNormalization for the first part but not for the second part, since the
+shapes of mean/variance and gamma/beta are different between layer and batch
+normalization. On the other hand, `tfa.layers.InstanceNormalization` utilizes
+many operations, like `Mul`, `Mean`, `Add`, etc. Therefore, by using `nv_norms`,
+users should expect more performance benefits from layer normalization than
+instance normalization.
 
-The fp16 support should be compatible with the current TF grappler optimizations
-(e.g. layout). However, we need an additional patch to let the layout optimizer
-recognize the newly introduced ops (`FusedLayerNorm`, `FusedLayerNormGrad`,
-`FusedInstanceNorm` and `FusedInstanceNormGrad`) to avoid unnecessary Transpose 
-ops. This will be done in the future NGC TF release. 
-
+In addition, `nv_norms` is compatible with the TF grappler optimizations (e.g.
+layout). In the NGC TF, the layout optimizer has been improved to recognize the
+newly introduced ops (`FusedLayerNorm`, `FusedLayerNormGrad`,
+`FusedInstanceNorm` and `FusedInstanceNormGrad`) to avoid unnecessary Transpose
+ops when operating with the `float` or `half` data types. 
 
 ## Usage
 
@@ -81,7 +82,7 @@ End of NCHW
 
 ### Use it in Real-World Model
 We provide the sample scripts to demonstrate how to substitute the
-`nv_norms.FusedXXXNorm` for the existing layer calls.
+`nv_norms.XXXNormalization` for the existing layer calls.
 
 To replace `tf.keras.layers.LayerNormalization` (details in `sample_layerN.py`):
 ```python
@@ -89,7 +90,7 @@ layerN = tf.keras.layers.LayerNormalization(axis=(1,2,3))
 ```
 To
 ```python
-layerN = nv_norms.FusedLayerNorm(axis=(1,2,3))
+layerN = nv_norms.LayerNormalization(axis=(1,2,3))
 ```
 
 To replace `tfa.layers.InstanceNormalization` (details in
@@ -99,7 +100,7 @@ instanceN = tfa.layers.InstanceNormalization(axis=channel_axis)
 ```
 To
 ```python
-instanceN = nv_norms.FusedInstanceNorm(axis=channel_axis)
+instanceN = nv_norms.InstanceNormalization(axis=channel_axis)
 ```
 A legal value of optional argument `axis` is taken from (1, -1), where -1 is the
  default.

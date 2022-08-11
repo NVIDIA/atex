@@ -14,7 +14,7 @@ from tensorflow.python.framework import test_util
 from tensorflow.python.platform import test
 
 from nv_norms import fused_layer_norm_op, fused_layer_norm_grad_op
-from nv_norms import FusedLayerNorm
+from nv_norms import LayerNormalization
 
 
 def layer_norm_grad_np(x, dy, gamma, cache, axis):
@@ -178,7 +178,7 @@ class FusedLayerNormLayerTest(test.TestCase):
     layerN_ref.set_weights([gamma, beta])
 
     y_ref = layerN_ref(x)
-    layerN = FusedLayerNorm(axis=axis)
+    layerN = LayerNormalization(axis=axis)
     layerN.build(input_shape=x_shape)
     layerN.set_weights([gamma, beta])
     y = layerN(x)
@@ -193,8 +193,8 @@ class FusedLayerNormLayerTest(test.TestCase):
     x = tf.constant(np.random.normal(size=x_shape), dtype=data_dtype)
     gamma = tf.constant(np.random.normal(size=weight_shape), dtype=tf.float32)
     beta = tf.constant(np.random.normal(size=weight_shape), dtype=tf.float32)
-   
-    layerN = FusedLayerNorm(axis=axis)
+
+    layerN = LayerNormalization(axis=axis)
     layerN.build(input_shape=x_shape)
     layerN.set_weights([gamma, beta])
 
@@ -212,7 +212,7 @@ class FusedLayerNormLayerTest(test.TestCase):
 
     dx, dgamma, dbeta = get_grads(layerN)
     dx_ref, dgamma_ref, dbeta_ref = get_grads(layerN_ref)
-        
+
     self.assertAllClose(dx_ref, dx, rtol=0.01, atol=0.01)
     self.assertAllClose(dbeta_ref, dbeta, rtol=0.01, atol=0.01)
     self.assertAllClose(dgamma_ref, dgamma, rtol=0.02, atol=0.02)
@@ -234,7 +234,8 @@ class FusedLayerNormLayerTest(test.TestCase):
     axes = [-1, 2]
     for axis in axes:
       self._runForward([2, 3, 4], tf.float32, axis)
-      self._runBackward([2, 3, 4], tf.float32, axis) 
+      self._runBackward([2, 3, 4], tf.float32, axis)
 
 if __name__ == '__main__':
   test.main()
+

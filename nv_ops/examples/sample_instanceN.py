@@ -19,7 +19,7 @@ axis = -1
 conv2d = layers.Conv2D(k, (r, s), padding='same')
 instanceN = tfa.layers.InstanceNormalization(axis=axis)
 if use_nv_norms:
-  instanceN = nv_norms.FusedInstanceNorm(axis=axis)
+  instanceN = nv_norms.InstanceNormalization(axis=axis)
 
 def model():
   x = layers.Input(shape=(H, W, C), batch_size=None)
@@ -46,3 +46,4 @@ g = train_step(data)
 
 _ = g[0][0].numpy() # sync GPU
 print("Done with", "Fused instanceN" if use_nv_norms else "tfa instanceN")
+

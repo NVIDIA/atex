@@ -10,10 +10,10 @@ def benchmark_fn(input_shape, use_nv_ops):
   mixed_precision.set_global_policy('mixed_float16')
   warmup = 10
   repeat = 100
-  
+
   layerN = tf.keras.layers.LayerNormalization(axis=(1,))
   if use_nv_ops:
-    layerN = nv_norms.FusedLayerNorm(axis=(1,))
+    layerN = nv_norms.LayerNormalization(axis=(1,))
 
   def train_step(x):
     with tf.GradientTape() as tape:
@@ -58,3 +58,4 @@ for input_shape in input_shapes:
   time_nv = benchmark_fn(input_shape, True)
   print("Input: {} {} Time(ms): TF: {:0.2f} NV: {:0.2f}".format(
       input_shape[0], input_shape[1], time_tf, time_nv))
+
