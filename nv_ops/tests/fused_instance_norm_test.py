@@ -136,7 +136,7 @@ class FusedInstanceNormOpTest(test.TestCase):
     self.assertAllClose(dgamma_ref, dgamma, rtol=0.01, atol=0.01)
 
   @test_util.run_gpu_only
-  def testFusedinstanceNormOp(self):
+  def testFusedInstanceNormOp(self):
     N, C = 2, 32
     with self.cached_session(use_gpu=True) as sess:
       for x_rank in (4, 5,):
@@ -147,7 +147,7 @@ class FusedInstanceNormOpTest(test.TestCase):
             self._runBackward(x_shape, axis)
 
   @test_util.run_gpu_only
-  def testFusedinstanceNormEmptyInput(self):
+  def testFusedInstanceNormEmptyInput(self):
     with self.cached_session(use_gpu=True) as sess:
       x = tf.constant([], dtype=tf.float32)
       x = tf.reshape(x, shape=(0, 0, 0, 0, 0))
@@ -162,7 +162,7 @@ class FusedInstanceNormOpTest(test.TestCase):
       self.assertAllEqual(inv_var.shape, [0, 0])
 
   @test_util.run_gpu_only
-  def testFusedinstanceNormGradEmptyInput(self):
+  def testFusedInstanceNormGradEmptyInput(self):
     with self.cached_session(use_gpu=True) as sess:
       dy = tf.constant([], dtype=tf.float32)
       dy = tf.reshape(dy, shape=(0, 0, 0, 0, 0))
@@ -236,7 +236,7 @@ class FusedInstanceNormLayerTest(test.TestCase):
     self.assertAllClose(dgamma_ref, dgamma, rtol=0.01, atol=0.01)
 
   @test_util.run_gpu_only
-  def testFusedinstanceNorm(self):
+  def testFusedInstanceNorm(self):
     N, C = 2, 32
     with self.cached_session(use_gpu=True) as sess:
       rank, features = 5, 4
