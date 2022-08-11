@@ -16,19 +16,14 @@ k, c, r, s = (4, C, 2, 2)
 use_nv_norms = True if args.nvops else False
 
 conv2d = layers.Conv2D(k, (r, s), padding='same')
-layerN = layers.LayerNormalization(axis=(1,2,3))
-
+layerN = layers.LayerNormalization(axis=(1, 2, 3))
 if use_nv_norms:
-  # Call the build() to create weights.
-  layerN.build((N, H, W, k))
+  layerN = nv_norms.FusedLayerNorm(axis=(1, 2, 3))
 
 def model():
   x = layers.Input(shape=(H, W, C), batch_size=None)
   y = conv2d(x)
-  if use_nv_norms:
-    z, _, _ = nv_norms.fused_layer_norm(y, layerN.gamma, layerN.beta)
-  else:
-    z = layerN(y)
+  z = layerN(y)
   return models.Model(x, z, name='toy_model')
 
 toy_model = model()

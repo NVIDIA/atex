@@ -1,6 +1,5 @@
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 # ==============================================================================
-
 import nv_norms
 import tensorflow as tf
 import time
@@ -11,20 +10,15 @@ def benchmark_fn(input_shape, use_nv_ops):
   mixed_precision.set_global_policy('mixed_float16')
   warmup = 10
   repeat = 100
-
+  
   layerN = tf.keras.layers.LayerNormalization(axis=(1,))
-
   if use_nv_ops:
-    # Call the build() to create weights.
-    layerN.build(input_shape)
+    layerN = nv_norms.FusedLayerNorm(axis=(1,))
 
   def train_step(x):
     with tf.GradientTape() as tape:
       tape.watch(x)
-      if use_nv_ops:
-        y, _, _ = nv_norms.fused_layer_norm(x, layerN.gamma, layerN.beta)
-      else:
-        y = layerN(x)
+      y = layerN(x)
       loss = tf.reduce_sum(y)
     dx, (dgamma, dbeta) = tape.gradient(loss, [x, layerN.variables])
     return dx, dgamma, dbeta

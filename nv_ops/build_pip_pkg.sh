@@ -68,7 +68,7 @@ function main() {
   cp ${PIP_FILE_PREFIX}MANIFEST.in "${TMPDIR}"
   cp ${PIP_FILE_PREFIX}../LICENSE "${TMPDIR}"
   rsync -avm -L --exclude='*_test.py' ${PIP_FILE_PREFIX}nv_norms "${TMPDIR}"
-
+  
   pushd ${TMPDIR}
   echo $(date) : "=== Building wheel"
 

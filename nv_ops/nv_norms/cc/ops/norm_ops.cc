@@ -87,7 +87,7 @@ Status FusedLayerNormGradShape(shape_inference::InferenceContext* c) {
 
 Status FusedInstanceNormShape(shape_inference::InferenceContext* c) {
   // For the input tensor, the first dim is the batch and the remaining dims are
-  // the features. Always assume at least 4D tensor, NHWC or NCHW.
+  // the features. Always assume at least 4D tensor.
   ShapeHandle x_shape;
   TF_RETURN_IF_ERROR(c->WithRankAtLeast(c->input(0), 4, &x_shape));
 
@@ -95,7 +95,15 @@ Status FusedInstanceNormShape(shape_inference::InferenceContext* c) {
   Status s = c->GetAttr("data_format", &data_format);
 
   const int x_rank = c->Rank(x_shape);
-  int channel_dim_index = s.ok() && data_format == "NC.." ? 1 : x_rank - 1;
+  int channel_dim_index;
+  if (s.ok() && data_format.size() > 2 && data_format[0] == 'N' &&
+      (data_format[1] == 'C' || data_format[data_format.size() - 1] == 'C')) {
+    channel_dim_index = data_format[1] == 'C' ? 1 : x_rank - 1;
+  } else {
+    return errors::InvalidArgument(
+        "We only accept 'NC...' or 'N...C' data format, but got",
+        (s.ok() ? data_format : ""));
+  }
 
   int num_batches = c->Value(c->Dim(x_shape, 0));
 
@@ -117,7 +125,15 @@ Status FusedInstanceNormGradShape(shape_inference::InferenceContext* c) {
   Status s = c->GetAttr("data_format", &data_format);
 
   const int x_rank = c->Rank(x_shape);
-  int channel_dim_index = s.ok() && data_format == "NC.." ? 1 : x_rank - 1;
+  int channel_dim_index;
+  if (s.ok() && data_format.size() > 2 && data_format[0] == 'N' &&
+      (data_format[1] == 'C' || data_format[data_format.size() - 1] == 'C')) {
+    channel_dim_index = data_format[1] == 'C' ? 1 : x_rank - 1;
+  } else {
+    return errors::InvalidArgument(
+        "We only accept 'NC...' or 'N...C' data format, but got",
+        (s.ok() ? data_format : ""));
+  }
 
   DimensionHandle channel_dim = c->Dim(x_shape, channel_dim_index);
 
@@ -165,7 +181,7 @@ REGISTER_OP("FusedInstanceNorm")
     .Output("reserve_space_1: U")
     .Output("reserve_space_2: U")
     .Attr("T: {half, float}")
-    .Attr(GetConvnetDataFormat2D3DAttrString())
+    .Attr("data_format: string = 'N...C' ")
     .Attr("U: {float}")
     .Attr("epsilon: float = 0.001")
     .SetShapeFn(shape_inference::FusedInstanceNormShape);
@@ -179,7 +195,7 @@ REGISTER_OP("FusedInstanceNormGrad")
     .Output("x_backprop: T")
     .Output("scale_backprop: U")
     .Output("offset_backprop: U")
-    .Attr(GetConvnetDataFormat2D3DAttrString())
+    .Attr("data_format: string = 'N...C' ")
     .Attr("T: {half, float}")
     .Attr("U: {float}")
     .Attr("epsilon: float = 0.001")

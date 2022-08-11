@@ -1,6 +1,5 @@
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 # ==============================================================================
-
 import nv_norms
 import tensorflow as tf
 import tensorflow_addons as tfa
@@ -8,27 +7,18 @@ import time
 
 from tensorflow.keras import mixed_precision
 
-def benchmark_fn(input_shape, use_nv_ops, data_format="NC..."):
+def benchmark_fn(input_shape, use_nv_ops, axis=-1):
   mixed_precision.set_global_policy('mixed_float16')
-  manual_mixed_float16 = True
   warmup = 10
   repeat = 20
-  channel_axis = -1 if data_format == "N...C" else 1
-  gamma, beta = None, None
-  instanceN = tfa.layers.InstanceNormalization(axis=channel_axis)
+  instanceN = tfa.layers.InstanceNormalization(axis=axis)
   if use_nv_ops:
-    # Call the build() to create weights.
-    instanceN.build(input_shape=input_shape)
-    gamma, beta = instanceN.weights[0], instanceN.weights[1]
+    instanceN = nv_norms.FusedInstanceNorm(axis=axis)
 
   def train_step(x):
     with tf.GradientTape() as tape:
       tape.watch(x)
-      if use_nv_ops:
-        y, _, _ = nv_norms.fused_instance_norm(
-            x, gamma, beta, data_format=data_format)
-      else:
-        y = instanceN(x)
+      y = instanceN(x)
       loss = tf.reduce_sum(y)
     dx, (dgamma, dbeta) = tape.gradient(loss, [x, instanceN.variables])
     return dx, dgamma, dbeta
@@ -67,17 +57,17 @@ input_shapes = [
 for input_shape in input_shapes:
   def sw(x): return (x[0], x[2], x[2], x[2], x[1])
   expanded_shape = sw(input_shape)
-  time_tf = benchmark_fn(expanded_shape, False, "N...C")
-  time_nv = benchmark_fn(expanded_shape, True, "N...C")
+  time_tf = benchmark_fn(expanded_shape, False, axis=-1)
+  time_nv = benchmark_fn(expanded_shape, True, axis=-1)
   print("Input: {} Time(ms): TF: {:0.2f} NV: {:0.2f}".format(
       expanded_shape, time_tf, time_nv))
+print("End of channel last layout.")
 
-print("End of NHWC")
 for input_shape in input_shapes:
   def sw(x): return (x[0], x[1], x[2], x[2], x[2])
   expanded_shape = sw(input_shape)
-  time_tf = benchmark_fn(expanded_shape, False, "NC...")
-  time_nv = benchmark_fn(expanded_shape, True, "NC...")
+  time_tf = benchmark_fn(expanded_shape, False, axis=1)
+  time_nv = benchmark_fn(expanded_shape, True, axis=1)
   print("Input: {} Time(ms): TF: {:0.2f} NV: {:0.2f}".format(
       expanded_shape, time_tf, time_nv))
-print("End of NCHW")
+print("End of channel first layout.")

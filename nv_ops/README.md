@@ -81,35 +81,28 @@ End of NCHW
 
 ### Use it in Real-World Model
 We provide the sample scripts to demonstrate how to substitute the
-`nv_norms.fused_xxx_norm` for the existing layer calls.
+`nv_norms.FusedXXXNorm` for the existing layer calls.
 
 To replace `tf.keras.layers.LayerNormalization` (details in `sample_layerN.py`):
 ```python
 layerN = tf.keras.layers.LayerNormalization(axis=(1,2,3))
-...
-z = layerN(y)
 ```
 To
 ```python
-layerN = tf.keras.layers.LayerNormalization(axis=(1,2,3))
-...
-z, _, _ = nv_norms.fused_layer_norm(y, layerN.gamma, layerN.beta)
+layerN = nv_norms.FusedLayerNorm(axis=(1,2,3))
 ```
 
 To replace `tfa.layers.InstanceNormalization` (details in
 `sample_instanceN.py`):
 ```python
 instanceN = tfa.layers.InstanceNormalization(axis=channel_axis)
-...
-y = instanceN(x)
 ```
 To
 ```python
-y, _, _ = nv_norms.fused_instance_norm(
-    x, instanceN.weights[0], instanceN.weights[1], data_format='N...C')
+instanceN = nv_norms.FusedInstanceNorm(axis=channel_axis)
 ```
-A legal value of optional argument `data_format` is taken from ("N...C", "NC...", "NCHW", "NHWC", "NDHWC", "NCDHW"),
-where `'NHWC'` is the default.
+A legal value of optional argument `axis` is taken from (1, -1), where -1 is the
+ default.
 
 ### Limitations
 

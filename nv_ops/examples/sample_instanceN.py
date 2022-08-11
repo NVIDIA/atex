@@ -15,23 +15,16 @@ args, _ = parser.parse_known_args()
 N, H, W, C = (2, 32, 32, 8)
 k, c, r, s = (4, C, 2, 2)
 use_nv_norms = True if args.nvops else False
-
+axis = -1
 conv2d = layers.Conv2D(k, (r, s), padding='same')
-instanceN = tfa.layers.InstanceNormalization(axis=-1)
-
+instanceN = tfa.layers.InstanceNormalization(axis=axis)
 if use_nv_norms:
-  # Call the build() to create weights.
-  instanceN.build(input_shape=(N, H, W, k))
+  instanceN = nv_norms.FusedInstanceNorm(axis=axis)
 
 def model():
   x = layers.Input(shape=(H, W, C), batch_size=None)
   y = conv2d(x)
-  if use_nv_norms:
-    z, _, _ = nv_norms.fused_instance_norm(y,
-                                           instanceN.weights[0],
-                                           instanceN.weights[1])
-  else:
-    z = instanceN(y)
+  z = instanceN(y)
   return models.Model(x, z, name='toy_model')
 
 toy_model = model()

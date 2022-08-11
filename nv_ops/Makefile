@@ -29,11 +29,11 @@ $(IN_GPU_ONLY_TARGET_LIB): nv_norms/cc/kernels/fused_instance_norm_op.cu.cc
 $(TARGET_LIB): $(LN_SRCS) $(IN_SRCS) $(LN_GPU_ONLY_TARGET_LIB) $(IN_GPU_ONLY_TARGET_LIB)
 	$(CXX) $(CFLAGS) -o $@ $^ ${LDFLAGS}  -D GOOGLE_CUDA=1  -I/usr/local/cuda/include -L/usr/local/cuda/lib64 -lcudart
 
-layer_norm_test: test/fused_layer_norm_ops_test.py nv_norms/python/ops/nv_norm_ops.py $(TARGET_LIB)
-	$(PYTHON_BIN_PATH) test/fused_layer_norm_ops_test.py
+layer_norm_test: tests/fused_layer_norm_test.py nv_norms/python/ops/nv_norm_ops.py $(TARGET_LIB)
+	$(PYTHON_BIN_PATH) tests/fused_layer_norm_test.py
 
-instance_norm_test: test/fused_instance_norm_ops_test.py nv_norms/python/ops/nv_norm_ops.py $(TARGET_LIB)
-	$(PYTHON_BIN_PATH) test/fused_instance_norm_ops_test.py
+instance_norm_test: tests/fused_instance_norm_test.py nv_norms/python/ops/nv_norm_ops.py $(TARGET_LIB)
+	$(PYTHON_BIN_PATH) tests/fused_instance_norm_test.py
 
 nv_norms_op: $(TARGET_LIB)
 

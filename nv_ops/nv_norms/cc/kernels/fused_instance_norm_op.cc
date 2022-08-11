@@ -21,6 +21,19 @@ namespace tensorflow {
 using CPUDevice = Eigen::ThreadPoolDevice;
 using GPUDevice = Eigen::GpuDevice;
 
+namespace {
+bool FormatFromSuccinctString(absl::string_view format_str,
+                              TensorFormat* format) {
+  int n = format_str.size();
+  if (n > 2 && format_str[0] == 'N' &&
+      (format_str[1] == 'C' || format_str[n - 1] == 'C')) {
+    *format = format_str[1] == 'C' ? FORMAT_NCHW : FORMAT_NHWC;
+    return true;
+  }
+  return false;
+}
+}  // end namespace
+
 namespace functor {
 
 template <typename T, typename U>
@@ -302,7 +315,7 @@ class FusedInstanceNormOp : public OpKernel {
       : OpKernel(context) {
     string data_format;
     if (context->GetAttr("data_format", &data_format).ok()) {
-      OP_REQUIRES(context, FormatFromString(data_format, &data_format_),
+      OP_REQUIRES(context, FormatFromSuccinctString(data_format, &data_format_),
                   errors::InvalidArgument("Invalid data format"));
     } else {
       data_format_ = FORMAT_NHWC;
@@ -404,7 +417,7 @@ class FusedInstanceNormGradOp : public OpKernel {
       : OpKernel(context) {
     string data_format;
     if (context->GetAttr("data_format", &data_format).ok()) {
-      OP_REQUIRES(context, FormatFromString(data_format, &data_format_),
+      OP_REQUIRES(context, FormatFromSuccinctString(data_format, &data_format_),
                   errors::InvalidArgument("Invalid data format"));
     } else {
       data_format_ = FORMAT_NHWC;

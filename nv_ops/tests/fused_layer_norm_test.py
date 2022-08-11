@@ -13,10 +13,9 @@ import tensorflow as tf
 from tensorflow.python.framework import test_util
 from tensorflow.python.platform import test
 
-try:
-  from nv_norms.python.ops import nv_norm_ops
-except ImportError:
-  import nv_norm_ops
+from nv_norms import fused_layer_norm_op, fused_layer_norm_grad_op
+from nv_norms import FusedLayerNorm
+
 
 def layer_norm_grad_np(x, dy, gamma, cache, axis):
   assert x.ndim >= 2, "x and dy have to be larger than 1D."
@@ -62,7 +61,7 @@ def layer_norm_grad_np(x, dy, gamma, cache, axis):
   dx = dx.reshape(x_shape)
   return dgamma, dbeta, dx
 
-class FusedLayerNormTest(test.TestCase):
+class FusedLayerNormOpTest(test.TestCase):
   def _runForward(self, x_shape, data_dtype, axis, epsilon=0.001):
     validated_axis = sorted(set([i % len(x_shape) for i in axis]))
     weight_shape = [x_shape[i] for i in validated_axis]
@@ -72,14 +71,14 @@ class FusedLayerNormTest(test.TestCase):
     gamma = tf.constant(np.random.normal(size=weight_shape), dtype=tf.float32)
     beta = tf.constant(np.random.normal(size=weight_shape), dtype=tf.float32)
     ref_ln = tf.keras.layers.LayerNormalization(
-                 axis=validated_axis, center=True, scale=True, epsilon=epsilon)
+        axis=validated_axis, center=True, scale=True, epsilon=epsilon)
     ref_ln.build(input_shape=x_shape)
     ref_ln.set_weights([gamma, beta])
     y_ref = ref_ln(x)
     mean_ref, var_ref = tf.nn.moments(x, axes=validated_axis)
     mean_ref = tf.reshape(mean_ref, shape=-1)
     var_ref = tf.reshape(var_ref, shape=-1)
-    y, mean, inv_var = nv_norm_ops.fused_layer_norm(x, gamma, beta, axis=axis)
+    y, mean, inv_var = fused_layer_norm_op(x, gamma, beta, axis=axis)
     self.assertAllClose(y, y_ref, rtol=0.01, atol=0.01)
     self.assertAllClose(mean, mean_ref, rtol=0.01, atol=0.01)
     self.assertAllClose(inv_var, 1. / var_ref, rtol=0.01, atol=0.01)
@@ -105,7 +104,7 @@ class FusedLayerNormTest(test.TestCase):
     cache["ivar"] = tf.cast(inv_var, tf.float32)
     cache["mean"] = tf.cast(mean, tf.float32)
 
-    dx, dgamma, dbeta = nv_norm_ops.fused_layer_norm_grad(
+    dx, dgamma, dbeta = fused_layer_norm_grad_op(
         dy, x, gamma, cache["mean"], cache["ivar"], axis=axis)
     dgamma_ref, dbeta_ref, dx_ref = layer_norm_grad_np(
         x_np, dy_np, gamma_np, cache, axis=validated_axis)
@@ -114,7 +113,7 @@ class FusedLayerNormTest(test.TestCase):
     self.assertAllClose(dgamma_ref, dgamma, rtol=0.02, atol=0.02)
 
   @test_util.run_gpu_only
-  def testFusedLayerNorm(self):
+  def testFusedLayerNormOp(self):
     with self.cached_session(use_gpu=True):
       dtypes = [tf.float32, tf.float16]
       ranks = [2, 3]
@@ -124,7 +123,7 @@ class FusedLayerNormTest(test.TestCase):
                                                  features):
         axis = [-1] if rank == 2 else [-2, -1]
         x_shape = [N] * (rank - 1)
-        x_shape.append(2 ** D)
+        x_shape.append(2**D)
         self._runForward(x_shape, dtype, axis)
         self._runBackward(x_shape, dtype, axis)
 
@@ -142,7 +141,7 @@ class FusedLayerNormTest(test.TestCase):
       x = tf.reshape(x, shape=(0, 0))
       gamma = tf.constant([], dtype=tf.float32)
       beta = tf.constant([], dtype=tf.float32)
-      y, mean, inv_var = nv_norm_ops.fused_layer_norm(x, gamma, beta)
+      y, mean, inv_var = fused_layer_norm_op(x, gamma, beta)
       self.assertAllEqual(y.shape, [0, 0])
       self.assertAllEqual(mean.shape, [0])
       self.assertAllEqual(inv_var.shape, [0])
@@ -157,11 +156,85 @@ class FusedLayerNormTest(test.TestCase):
       gamma = tf.constant([], dtype=tf.float32)
       mean = tf.constant([], dtype=tf.float32)
       inv_var = tf.constant([], dtype=tf.float32)
-      dx, dgamma, dbeta = nv_norm_ops.fused_layer_norm_grad(
+      dx, dgamma, dbeta = fused_layer_norm_grad_op(
           dy, x, gamma, mean, inv_var)
       self.assertAllEqual(dx.shape, [0, 0])
       self.assertAllEqual(dgamma.shape, [0])
       self.assertAllEqual(dbeta.shape, [0])
+
+class FusedLayerNormLayerTest(test.TestCase):
+  def _runForward(self, x_shape, data_dtype, axis, epsilon=0.001):
+    if isinstance(axis, int):
+      weight_shape = x_shape[axis]
+    else:
+      weight_shape = [x_shape[i] for i in axis]
+    x = tf.random.uniform(shape=x_shape, minval=10.0,
+                          maxval=1000.0, dtype=data_dtype)
+    gamma = tf.constant(np.random.normal(size=weight_shape), dtype=tf.float32)
+    beta = tf.constant(np.random.normal(size=weight_shape), dtype=tf.float32)
+    layerN_ref = tf.keras.layers.LayerNormalization(
+        axis=axis, center=True, scale=True, epsilon=epsilon)
+    layerN_ref.build(input_shape=x_shape)
+    layerN_ref.set_weights([gamma, beta])
+
+    y_ref = layerN_ref(x)
+    layerN = FusedLayerNorm(axis=axis)
+    layerN.build(input_shape=x_shape)
+    layerN.set_weights([gamma, beta])
+    y = layerN(x)
+
+    self.assertAllClose(y, y_ref, rtol=0.01, atol=0.01)
+
+  def _runBackward(self, x_shape, data_dtype, axis):
+    if isinstance(axis, int):
+      weight_shape = x_shape[axis]
+    else:
+      weight_shape = [x_shape[i] for i in axis]
+    x = tf.constant(np.random.normal(size=x_shape), dtype=data_dtype)
+    gamma = tf.constant(np.random.normal(size=weight_shape), dtype=tf.float32)
+    beta = tf.constant(np.random.normal(size=weight_shape), dtype=tf.float32)
+   
+    layerN = FusedLayerNorm(axis=axis)
+    layerN.build(input_shape=x_shape)
+    layerN.set_weights([gamma, beta])
+
+    layerN_ref = tf.keras.layers.LayerNormalization(
+        axis=axis, center=True, scale=True)
+    layerN_ref.build(input_shape=x_shape)
+    layerN_ref.set_weights([gamma, beta])
+
+    def get_grads(layerN):
+      with tf.GradientTape() as tape:
+        tape.watch(x)
+        y = layerN(x)
+      dx, (dgamma, dbeta) = tape.gradient(y, [x, layerN.variables])
+      return dx, dgamma, dbeta
+
+    dx, dgamma, dbeta = get_grads(layerN)
+    dx_ref, dgamma_ref, dbeta_ref = get_grads(layerN_ref)
+        
+    self.assertAllClose(dx_ref, dx, rtol=0.01, atol=0.01)
+    self.assertAllClose(dbeta_ref, dbeta, rtol=0.01, atol=0.01)
+    self.assertAllClose(dgamma_ref, dgamma, rtol=0.02, atol=0.02)
+
+  @test_util.run_gpu_only
+  def testFusedLayerNorm(self):
+    with self.cached_session(use_gpu=True):
+      dtypes = [tf.float32, tf.float16]
+      rank, N, D = 3, 8, 8
+      for dtype in dtypes:
+        axis = [-1] if rank == 2 else [-2, -1]
+        x_shape = [N] * (rank - 1)
+        x_shape.append(2 ** D)
+        self._runForward(x_shape, dtype, axis)
+        self._runBackward(x_shape, dtype, axis)
+
+  @test_util.run_gpu_only
+  def testLayerWithIntegerAxis(self):
+    axes = [-1, 2]
+    for axis in axes:
+      self._runForward([2, 3, 4], tf.float32, axis)
+      self._runBackward([2, 3, 4], tf.float32, axis) 
 
 if __name__ == '__main__':
   test.main()
