@@ -13,6 +13,13 @@ TF_CFLAGS := $(shell $(PYTHON_BIN_PATH) -c 'import tensorflow as tf; print(" ".j
 TF_LFLAGS := $(shell $(PYTHON_BIN_PATH) -c 'import tensorflow as tf; print(" ".join(tf.sysconfig.get_link_flags()))')
 
 CFLAGS = ${TF_CFLAGS} -fPIC -O2 -std=c++14
+NVCCFLAGS = -std=c++14 -c -gencode=arch=compute_80,code=compute_80 \
+						              -gencode=arch=compute_80,code=sm_80 \
+													-gencode=arch=compute_86,code=sm_86 \
+													-gencode=arch=compute_70,code=compute_70 \
+													-gencode=arch=compute_70,code=sm_70 \
+													-gencode=arch=compute_52,code=compute_52 \
+													-gencode=arch=compute_52,code=sm_52
 LDFLAGS = -shared ${TF_LFLAGS}
 
 LN_GPU_ONLY_TARGET_LIB = nv_norms/python/ops/_fused_layer_norm_ops.cu.o
@@ -21,10 +28,10 @@ IN_GPU_ONLY_TARGET_LIB = nv_norms/python/ops/_fused_instance_norm_ops.cu.o
 TARGET_LIB = nv_norms/python/ops/_fused_nv_norm_ops.so
 
 $(LN_GPU_ONLY_TARGET_LIB): nv_norms/cc/kernels/fused_layer_norm_op.cu.cc
-	$(NVCC) -std=c++14 -c -o $@ $^  $(TF_CFLAGS) -D GOOGLE_CUDA=1 -x cu -Xcompiler -fPIC -DNDEBUG --expt-relaxed-constexpr
+	$(NVCC) $(NVCCFLAGS) -o $@ $^  $(TF_CFLAGS) -D GOOGLE_CUDA=1 -x cu -Xcompiler -fPIC -DNDEBUG --expt-relaxed-constexpr
 
 $(IN_GPU_ONLY_TARGET_LIB): nv_norms/cc/kernels/fused_instance_norm_op.cu.cc
-	$(NVCC) -std=c++14 -c -o $@ $^  $(TF_CFLAGS) -D GOOGLE_CUDA=1 -x cu -Xcompiler -fPIC -DNDEBUG --expt-relaxed-constexpr
+	$(NVCC) $(NVCCFLAGS) -o $@ $^  $(TF_CFLAGS) -D GOOGLE_CUDA=1 -x cu -Xcompiler -fPIC -DNDEBUG --expt-relaxed-constexpr
 
 $(TARGET_LIB): $(LN_SRCS) $(IN_SRCS) $(LN_GPU_ONLY_TARGET_LIB) $(IN_GPU_ONLY_TARGET_LIB)
 	$(CXX) $(CFLAGS) -o $@ $^ ${LDFLAGS}  -D GOOGLE_CUDA=1  -I/usr/local/cuda/include -L/usr/local/cuda/lib64 -lcudart
