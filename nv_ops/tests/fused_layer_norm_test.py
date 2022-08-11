@@ -62,7 +62,7 @@ def layer_norm_grad_np(x, dy, gamma, cache, axis):
   dx = dx.reshape(x_shape)
   return dgamma, dbeta, dx
 
-class FusedLayerNormOpTest(test.TestCase):
+class NvNormsLayerNormOpTest(test.TestCase):
   def setUp(self):
     # TODO(kaixih): we've found the tests will fail with cuda_malloc_async on
     # GPUs with 16GB.
@@ -134,13 +134,6 @@ class FusedLayerNormOpTest(test.TestCase):
         self._runBackward(x_shape, dtype, axis)
 
   @test_util.run_gpu_only
-  def testFusedLayerNormWithDifferentAxis(self):
-    axes = [[-1, -2], [-1, -1], [1, -1]]
-    for axis in axes:
-      self._runForward([2, 3, 4], tf.float32, axis)
-      self._runBackward([2, 3, 4], tf.float32, axis)
-
-  @test_util.run_gpu_only
   def testFusedLayerNormEmptyInput(self):
     with self.cached_session(use_gpu=True):
       x = tf.constant([], dtype=tf.float32)
@@ -168,7 +161,7 @@ class FusedLayerNormOpTest(test.TestCase):
       self.assertAllEqual(dgamma.shape, [0])
       self.assertAllEqual(dbeta.shape, [0])
 
-class FusedLayerNormLayerTest(test.TestCase):
+class NvNormsLayerNormLayerTest(test.TestCase):
   def setUp(self):
     # TODO(kaixih): we've found the tests will fail with cuda_malloc_async on
     # GPUs with 16GB.
@@ -239,6 +232,13 @@ class FusedLayerNormLayerTest(test.TestCase):
         x_shape.append(2 ** D)
         self._runForward(x_shape, dtype, axis)
         self._runBackward(x_shape, dtype, axis)
+
+  @test_util.run_gpu_only
+  def testFusedLayerNormWithDifferentAxis(self):
+    axes = [[1, 2], [-2, -1], [1, -1], [-2, 2], -1]
+    for axis in axes:
+      self._runForward([2, 3, 4], tf.float32, axis)
+      self._runBackward([2, 3, 4], tf.float32, axis)
 
   @test_util.run_gpu_only
   def testLayerWithIntegerAxis(self):

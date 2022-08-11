@@ -84,7 +84,7 @@ class LayerNormalization(tf.keras.layers.Layer):
     axis = self.layer_norm.axis
     # Nv norm ops require the axis to be a list.
     if isinstance(axis, int):
-      self.axis = [axis]
+      axis = [axis]
     if axis != sorted(set(axis)):
       raise ValueError('We only support sorted and unique axis to make sure '
                        'the weights have the same data layout with the keras '
