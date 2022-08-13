@@ -36,23 +36,23 @@ def layer_norm_grad_np(x, dy, gamma, cache, axis):
   N = x.shape[0]
   D = x.shape[1]
 
-  ivar = cache["ivar"].numpy()
+  istd = cache["istd"].numpy()
   mean = cache['mean'].numpy()
 
-  # We manually expand ivar and mean from (N,) to (N,1) to facilitate the
+  # We manually expand istd and mean from (N,) to (N,1) to facilitate the
   # broadcasting in the following computation.
   mean = np.expand_dims(mean, -1)
-  ivar = np.expand_dims(ivar, -1)
+  istd = np.expand_dims(istd, -1)
 
   x_mean = x - mean
-  dgamma = np.sum(dy * x_mean * ivar, axis=N_axis)
+  dgamma = np.sum(dy * x_mean * istd, axis=N_axis)
   dbeta = np.sum(dy, axis=N_axis)
-  dl_di = dy * gamma * ivar
+  dl_di = dy * gamma * istd
   di_dx = 1.
-  dl_dvar = np.sum(dy * gamma * x_mean * (-0.5) * (ivar**3), axis=D_axis,
+  dl_dvar = np.sum(dy * gamma * x_mean * (-0.5) * (istd**3), axis=D_axis,
                    keepdims=True)
   dvar_dx = 2. * x_mean / D
-  dl_dmean = np.sum(-1. * dy * gamma * ivar, axis=D_axis, keepdims=True)
+  dl_dmean = np.sum(-1. * dy * gamma * istd, axis=D_axis, keepdims=True)
   dmean_dx = 1. / D
   dx = dl_di * di_dx + dl_dvar * dvar_dx + dl_dmean * dmean_dx
 
@@ -66,8 +66,7 @@ class NvNormsLayerNormOpTest(test.TestCase):
     validated_axis = sorted(set([i % len(x_shape) for i in axis]))
     weight_shape = [x_shape[i] for i in validated_axis]
 
-    x = tf.random.uniform(shape=x_shape, minval=10.0,
-                          maxval=1000.0, dtype=data_dtype)
+    x = tf.random.normal(shape=x_shape, stddev=10.0, dtype=tf.float32)                          
     gamma = tf.constant(np.random.normal(size=weight_shape), dtype=tf.float32)
     beta = tf.constant(np.random.normal(size=weight_shape), dtype=tf.float32)
     ref_ln = tf.keras.layers.LayerNormalization(
@@ -76,18 +75,19 @@ class NvNormsLayerNormOpTest(test.TestCase):
     ref_ln.set_weights([gamma, beta])
     y_ref = ref_ln(x)
     mean_ref, var_ref = tf.nn.moments(x, axes=validated_axis)
+    inv_var_ref = tf.constant(1. / (var_ref + epsilon),  dtype=tf.float32)
     mean_ref = tf.reshape(mean_ref, shape=-1)
     var_ref = tf.reshape(var_ref, shape=-1)
-    y, mean, inv_var = fused_layer_norm_op(x, gamma, beta, axis=axis)
+    y, mean, inv_std = fused_layer_norm_op(x, gamma, beta, axis=axis)
     self.assertAllClose(y, y_ref, rtol=0.01, atol=0.01)
     self.assertAllClose(mean, mean_ref, rtol=0.01, atol=0.01)
-    self.assertAllClose(inv_var, 1. / var_ref, rtol=0.01, atol=0.01)
+    self.assertAllClose(inv_std**2, inv_var_ref, rtol=0.01, atol=0.01)
 
-  def _runBackward(self, x_shape, data_dtype, axis):
+  def _runBackward(self, x_shape, data_dtype, axis, epsilon=0.001):
     validated_axis = sorted(set([i % len(x_shape) for i in axis]))
     weight_shape = [x_shape[i] for i in validated_axis]
 
-    x_np = np.random.normal(size=x_shape)
+    x_np = np.random.normal(0.0, 10.0, size=x_shape)
     dy_np = np.random.normal(size=x_shape)
     gamma_np = np.random.normal(size=weight_shape)
 
@@ -99,19 +99,19 @@ class NvNormsLayerNormOpTest(test.TestCase):
     mean = tf.reshape(mean, shape=-1)
     var = tf.reshape(var, shape=-1)
 
-    inv_var = 1. / var
+    inv_std = tf.constant(1. / np.sqrt(var + epsilon), dtype=tf.float32)
     cache = {}
-    cache["ivar"] = tf.cast(inv_var, tf.float32)
+    cache["istd"] = tf.cast(inv_std, tf.float32)
     cache["mean"] = tf.cast(mean, tf.float32)
 
     dx, dgamma, dbeta = fused_layer_norm_grad_op(
-        dy, x, gamma, cache["mean"], cache["ivar"], axis=axis)
+        dy, x, gamma, cache["mean"], cache["istd"], axis=axis)
     dgamma_ref, dbeta_ref, dx_ref = layer_norm_grad_np(
         x_np, dy_np, gamma_np, cache, axis=validated_axis)
     self.assertAllClose(dx_ref, dx, rtol=0.01, atol=0.01)
     self.assertAllClose(dbeta_ref, dbeta, rtol=0.01, atol=0.01)
     self.assertAllClose(dgamma_ref, dgamma, rtol=0.02, atol=0.02)
-
+  
   @test_util.run_gpu_only
   def testFusedLayerNormOp(self):
     with self.cached_session(use_gpu=True):

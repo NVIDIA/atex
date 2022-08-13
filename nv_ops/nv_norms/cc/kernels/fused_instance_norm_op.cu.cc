@@ -105,8 +105,9 @@ __global__ __launch_bounds__(1024) void InstanceNormRowReduceTempToOutFused(
     }
 
     U sum1 = BlockReduce(temp_storage).Sum(partial_sum1);
+    __syncthreads();
     U sum2 = BlockReduce(temp_storage).Sum(partial_sum2);
-
+    __syncthreads();
     if (threadIdx.x == 0) {
       cache1[k] = op.Finalize(sum1);
       cache2[k] = op.Finalize(sum2);
@@ -122,6 +123,7 @@ __global__ __launch_bounds__(1024) void InstanceNormRowReduceTempToOutFused(
       }
     }
     U sum3 = BlockReduce(temp_storage).Sum(partial_sum3);
+    __syncthreads();
     U sum4 = BlockReduce(temp_storage).Sum(partial_sum4);
     if (threadIdx.x == 0) {
       cache3[blockIdx.x] = op.Finalize(sum3);
@@ -176,8 +178,11 @@ __global__ __launch_bounds__(1024) void InstanceNormRowReduceInToOutFused(
     }
 
     U sum1 = BlockReduce(temp_storage.reduce).Sum(partial_sum1);
+    __syncthreads();
     U sum2 = BlockReduce(temp_storage.reduce).Sum(partial_sum2);
+    __syncthreads();
     U sum3 = BlockReduce(temp_storage.reduce).Sum(partial_sum3);
+    __syncthreads();
     U sum4 = BlockReduce(temp_storage.reduce).Sum(partial_sum4);
     if (tid == 0) {
       out1[k] = op.Finalize(sum1);
@@ -186,29 +191,6 @@ __global__ __launch_bounds__(1024) void InstanceNormRowReduceInToOutFused(
       out4[k] = op.Finalize(sum4);
     }
     __syncthreads();
-  }
-}
-
-template <typename T, typename U, typename Op>
-__global__ __launch_bounds__(1024) void InstanceNormRowReduceInToOutWF(
-    const T* __restrict__ in, const int N, const int D, U* out1, U* out2,
-    Op op) {
-  const int tid = threadIdx.x;
-
-  U block_mean, block_m2, block_count;
-  for (int k = blockIdx.x; k < N; k += gridDim.x) {
-    WFGeneric<U> wf_thread;
-
-    for (int i = tid; i < D; i += kBlockSize) {
-      op.Update(in, k, i, wf_thread);
-    }
-
-    WFGeneric<U> wf_row = WelfordBlockAllReduce<U>(wf_thread);
-
-    if (tid == 0) {
-      out1[k] = wf_row.mean;
-      out2[k] = op.Finalize(wf_row);
-    }
   }
 }
 
@@ -232,7 +214,6 @@ __global__ __launch_bounds__(1024) void InstanceNormRowReduceInToOut(
     }
 
     U sum = BlockReduce(temp_storage.reduce).Sum(partial_sum);
-
     if (tid == 0) {
       temp_storage.broadcast[0] = op1.Finalize(sum);
       out1[k] = op1.Finalize(sum);
@@ -252,91 +233,6 @@ __global__ __launch_bounds__(1024) void InstanceNormRowReduceInToOut(
       out2[k] = op2.Finalize(sum);
     }
   }
-}
-
-template <typename T, typename U>
-__global__ __launch_bounds__(1024) void InstanceNormBetaGammaRowReduceInToTemp(
-    const T* __restrict__ x, const T* __restrict__ dy,
-    const U* __restrict__ cache_mean, const U* __restrict__ cache_ivar,
-    const int N, const int C, const int D, U* __restrict__ temp_dbeta,
-    U* __restrict__ temp_dgamma, const bool is_channel_first = true) {
-  if (is_channel_first) {
-    typedef cub::BlockReduce<U, kBlockSize> BlockReduce;
-    __shared__ typename BlockReduce::TempStorage temp_storage;
-
-    const int row_offset = threadIdx.x + blockIdx.x * blockDim.x;
-    const int col_offset = threadIdx.y + blockIdx.y * blockDim.y;
-
-    int NxD = N * D;
-    int CxD = C * D;
-    int glb_id, cache_idx;
-    for (int col_idx = col_offset; col_idx < C;
-         col_idx += gridDim.y * blockDim.y) {
-      U partial_sum_dbeta = 0;
-      U partial_sum_dgamma = 0;
-      for (int i = row_offset; i < NxD; i += gridDim.x * blockDim.x) {
-        glb_id = (i / D) * CxD + col_idx * D + i % D;
-        cache_idx = i / D * C + col_idx;
-        U curr = dy[glb_id];
-        partial_sum_dbeta += curr;
-        partial_sum_dgamma +=
-            curr * (x[glb_id] - cache_mean[cache_idx]) * cache_ivar[cache_idx];
-      }
-      U sum_dbeta = BlockReduce(temp_storage).Sum(partial_sum_dbeta);
-      U sum_dgamma = BlockReduce(temp_storage).Sum(partial_sum_dgamma);
-      if (threadIdx.x == 0) {
-        temp_dbeta[blockIdx.x * C + col_idx] = sum_dbeta;
-        temp_dgamma[blockIdx.x * C + col_idx] = sum_dgamma;
-      }
-    }
-  } else {
-    typedef cub::BlockReduce<U, 64> BlockReduce;
-
-    const int row_offset = threadIdx.x + blockIdx.x * blockDim.x;
-    const int col_offset = threadIdx.y + blockIdx.y * blockDim.y;
-    if (row_offset >= C) return;
-    if (col_offset >= N * D) return;
-    int NxD = N * D;
-    int glb_id, cache_idx;
-
-    for (int row_idx = row_offset; row_idx < C;
-         row_idx += blockDim.x * gridDim.x) {
-      U partial_sum_dbeta = 0;
-      U partial_sum_dgamma = 0;
-      for (int i = col_offset; i < NxD; i += gridDim.y * blockDim.y) {
-        int row_idx = row_offset;
-        glb_id = i * C + row_idx;
-        cache_idx = i / D * C + row_idx;
-        U curr = dy[glb_id];
-        partial_sum_dbeta += curr;
-        partial_sum_dgamma +=
-            curr * (x[glb_id] - cache_mean[cache_idx]) * cache_ivar[cache_idx];
-      }
-      temp_dbeta[col_offset * C + row_idx] = partial_sum_dbeta;
-      temp_dgamma[col_offset * C + row_idx] = partial_sum_dgamma;
-    }
-  }
-}
-
-template <typename U>
-__global__ __launch_bounds__(1024) void InstanceNormGradBetaGammaTempToOut(
-    const U* __restrict__ tg, const U* __restrict__ tb, const int C,
-    const int N, U* __restrict__ dgamma, U* __restrict__ dbeta) {
-  const int tid = threadIdx.x + blockIdx.x * blockDim.x;
-  if (tid >= C) return;
-
-  U sum_dgamma = 0;
-  U sum_dbeta = 0;
-  for (int i = 0; i < N; i++) {
-    U tg_curr = tg[i * C + tid];
-    U tb_curr = tb[i * C + tid];
-
-    sum_dgamma += tg_curr;
-    sum_dbeta += tb_curr;
-  }
-
-  dgamma[tid] = sum_dgamma;
-  dbeta[tid] = sum_dbeta;
 }
 
 template <typename T, typename U>
@@ -548,8 +444,11 @@ __global__ __launch_bounds__(1024) void InstanceNormRowReduceInToTempFused(
         partial_sum4 += ret4;
       }
       U sum1 = BlockReduce(temp_storage).Sum(partial_sum1);
+      __syncthreads();
       U sum2 = BlockReduce(temp_storage).Sum(partial_sum2);
+      __syncthreads();
       U sum3 = BlockReduce(temp_storage).Sum(partial_sum3);
+      __syncthreads();
       U sum4 = BlockReduce(temp_storage).Sum(partial_sum4);
 
       if (threadIdx.x == 0) {
@@ -940,62 +839,6 @@ void InstanceNormDataWeightsGrad(OpKernelContext* context, const T* dy,
           context, N, C, D, dy, temp_1, temp_2, temp_3, temp_4, dldwstat_ops);
     }
   }
-}
-
-template <typename T, typename U>
-void InstanceNormWeightsGrad(OpKernelContext* context, const T* dy, const T* x,
-                             const U* cache_mean, const U* cache_ivar,
-                             const int N, const int C, const int D, U* dgamma,
-                             U* dbeta, const bool is_channel_first) {
-  const int min_rows_per_block = 100;
-  const int min_cols_per_block = 32;
-  const GPUDevice& d = context->eigen_device<GPUDevice>();
-  int total_tmp_rows;
-  int buffer_size;
-  dim3 blocks;
-  dim3 threads;
-  if (is_channel_first) {
-    const int reduced_rows =
-        DivUp(N * D, min_rows_per_block * min_rows_per_block);
-    const int reduced_cols = DivUp(C, min_cols_per_block);
-
-    blocks.x = reduced_rows;
-    blocks.y = reduced_cols;
-    threads.x = kBlockSize;
-
-    buffer_size = reduced_rows * C;
-    total_tmp_rows = reduced_rows;
-  } else {
-    int thd_x = min(C, (int)kBlockSize);
-    int thd_y = (int)kBlockSize / thd_x;
-    int min_workload_per_thread = 3200;
-    const int blocks_per_row = DivUp(N * D, thd_y * min_workload_per_thread);
-    threads.x = thd_x;
-    threads.y = thd_y;
-
-    blocks.x = DivUp(C, thd_x);
-    blocks.y = blocks_per_row;
-    buffer_size = C * blocks_per_row * thd_y;
-
-    total_tmp_rows = min(N * D, blocks_per_row * thd_y);
-  }
-
-  Tensor scratch1, scratch2;
-  OP_REQUIRES_OK(context, context->allocate_temp(DataTypeToEnum<U>::value,
-                                                 {buffer_size}, &scratch1));
-  OP_REQUIRES_OK(context, context->allocate_temp(DataTypeToEnum<U>::value,
-                                                 {buffer_size}, &scratch2));
-  U* temp_dgamma = scratch1.flat<U>().data();
-  U* temp_dbeta = scratch2.flat<U>().data();
-
-  TF_CHECK_OK(GpuLaunchKernel(InstanceNormBetaGammaRowReduceInToTemp<T, U>,
-                              blocks, threads, 0, d.stream(), x, dy, cache_mean,
-                              cache_ivar, N, C, D, temp_dbeta, temp_dgamma,
-                              is_channel_first));
-  TF_CHECK_OK(GpuLaunchKernel(InstanceNormGradBetaGammaTempToOut<U>,
-                              DivUp(C, (int)kBlockSize), kBlockSize, 0,
-                              d.stream(), temp_dgamma, temp_dbeta, C,
-                              total_tmp_rows, dgamma, dbeta));
 }
 
 template <typename T, typename U>
