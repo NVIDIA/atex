@@ -19,3 +19,13 @@ compute the norms in a single operation, eliminating many expensive round-trips
 to device memory and significantly improving performance. More in
 [nv_ops](./nv_ops/).
 
+## Contribution guidelines
+
+Please review the [Contribution Guidelines](CONTRIBUTING.md). 
+
+[GitHub issues](https://github.com/nvidia/atex/issues) will be used for tracking
+requests and bugs.
+
+## License
+
+[BSD License 2.0](LICENSE)
