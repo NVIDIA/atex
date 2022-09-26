@@ -6,6 +6,7 @@
 
 #if GOOGLE_CUDA
 #include <cub/cub.cuh>
+
 #include "third_party/gpus/cuda/include/cuda.h"
 #endif
 #include "fused_instance_norm_op.h"
@@ -39,7 +40,8 @@ __global__ __launch_bounds__(1024) void InstanceNormToTempWelford(
         op.Update(x, row_idx, i, wf_partial);
       }
 
-      WFGeneric<U> wf_block = WelfordBlockAllReduce<U>(wf_partial);
+      WFGeneric<U> wf_block = BlockAllReduce<WFGeneric<U>, WFGeneric<U>>(
+          wf_partial, WFGeneric<U>());
       if (threadIdx.x == 0) {
         temp_mean[row_idx * gridDim.x + blockIdx.x] = wf_block.mean;
         temp_m2[row_idx * gridDim.x + blockIdx.x] = wf_block.m2;
@@ -79,7 +81,8 @@ __global__ __launch_bounds__(1024) void InstanceNormTempToOutWelford(
       wf_partial = WFGeneric<U>()(wf_local, wf_partial);
     }
 
-    WFGeneric<U> wf_block = WelfordBlockAllReduce<U>(wf_partial);
+    WFGeneric<U> wf_block =
+        BlockAllReduce<WFGeneric<U>, WFGeneric<U>>(wf_partial, WFGeneric<U>());
     if (threadIdx.x == 0) {
       cache_mean[k] = wf_block.mean;
       cache_ivar[k] = op.Finalize(wf_block);
@@ -241,7 +244,6 @@ __global__ __launch_bounds__(1024) void InstanceNormGradBetaGamma(
     const U* __restrict__ cache_mean, const U* __restrict__ cache_ivar,
     const int N, const int C, const int D, U* __restrict__ dgamma,
     U* __restrict__ dbeta) {
-
   const int tid = threadIdx.x + blockIdx.x * blockDim.x;
 
   if (tid >= C) return;
@@ -945,8 +947,8 @@ struct FusedInstanceNormGrad<GPUDevice, T, U> {
                                       gamma, N, C, D, temp_1, temp_2, dgamma,
                                       dbeta, is_channel_first);
     // The temp_1 and temp_2 are dl_dmu and dl_dvars respectively.
-    DxFusedOp<T, U> dx_ops{x, cache_mean, cache_ivar, gamma, temp_2,
-                           temp_1, C, D};
+    DxFusedOp<T, U> dx_ops{x, cache_mean, cache_ivar, gamma, temp_2, temp_1, C,
+                           D};
     int min_work_per_thread = 100;
 
     TF_CHECK_OK(GpuLaunchKernel(

@@ -50,6 +50,8 @@ input_shapes = [
     (100000, 1000),
     (1000000, 100),
     (10000000, 10),
+    (4, 400001), # Non-typical shapes
+    (4, 10000001),
 ]
 
 for input_shape in input_shapes:
@@ -58,4 +60,3 @@ for input_shape in input_shapes:
   time_nv = benchmark_fn(input_shape, True)
   print("Input: {} {} Time(ms): TF: {:0.2f} NV: {:0.2f}".format(
       input_shape[0], input_shape[1], time_tf, time_nv))
-

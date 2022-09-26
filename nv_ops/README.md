@@ -46,18 +46,33 @@ Here is a simple benchmark script to compare the performance of
 `tf.keras.layers.LayerNormalization` and our fused layer norm.
 ```bash
 # python -u benchmark_layer_norm.py
-Input: 10 10000000 Time(ms): TF: 26.56 NV: 6.69
-Input: 100 1000000 Time(ms): TF: 8.33 NV: 6.02
-Input: 1000 100000 Time(ms): TF: 8.09 NV: 5.15
-Input: 10000 10000 Time(ms): TF: 8.56 NV: 6.48
-Input: 100000 1000 Time(ms): TF: 11.71 NV: 6.37
-Input: 1000000 100 Time(ms): TF: 31.85 NV: 8.75
-Input: 10000000 10 Time(ms): TF: 249.39 NV: 14.02
+# On V100
+Input: 10 10000000 Time(ms): TF: 28.10 NV: 5.56
+Input: 100 1000000 Time(ms): TF: 7.97 NV: 4.39
+Input: 1000 100000 Time(ms): TF: 7.63 NV: 3.60
+Input: 10000 10000 Time(ms): TF: 8.00 NV: 4.90
+Input: 100000 1000 Time(ms): TF: 11.16 NV: 4.39
+Input: 1000000 100 Time(ms): TF: 30.57 NV: 6.73
+Input: 10000000 10 Time(ms): TF: 241.46 NV: 14.00
+Input: 4 400001 Time(ms): TF: 2.19 NV: 0.65
+Input: 4 10000001 Time(ms): TF: 23.33 NV: 2.60
+
+# On A100
+Input: 10 10000000 Time(ms): TF: 28.97 NV: 3.36
+Input: 100 1000000 Time(ms): TF: 5.69 NV: 2.78
+Input: 1000 100000 Time(ms): TF: 5.48 NV: 2.81
+Input: 10000 10000 Time(ms): TF: 6.35 NV: 4.50
+Input: 100000 1000 Time(ms): TF: 9.48 NV: 4.32
+Input: 1000000 100 Time(ms): TF: 23.04 NV: 6.33
+Input: 10000000 10 Time(ms): TF: 178.51 NV: 13.82
+Input: 4 400001 Time(ms): TF: 2.30 NV: 0.59
+Input: 4 10000001 Time(ms): TF: 26.08 NV: 1.69
 ```
 Here is a simple benchmark script to compare the performance of
 `tfa.layers.InstanceNormalization` and our fused instance norm.
 ```bash
 # python -u benchmark_instance_norm.py
+# On V100
 Input: (2, 128, 128, 128, 32) Time(ms): TF: 36.60 NV: 10.01
 Input: (2, 128, 128, 128, 64) Time(ms): TF: 71.79 NV: 17.26
 Input: (4, 128, 128, 128, 32) Time(ms): TF: 71.77 NV: 17.23

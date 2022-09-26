@@ -8,13 +8,143 @@
 namespace tensorflow {
 namespace functor {
 
+#define CUDA_RETURN_IF_ERROR(...)                                         \
+  do {                                                                    \
+    cudaError_t cuda_status = (__VA_ARGS__);                              \
+    if (cuda_status != cudaSuccess) {                                     \
+      return errors::Internal("CUDA: ", cudaGetErrorString(cuda_status)); \
+    }                                                                     \
+  } while (0)
+
 static const int64_t kBlockSize = 128;
 static const int64_t kWarpSize = 32;
-static const int kMaxWorkPerWarp = 32;
+static const int kMaxWorkPerThread = 32;
+constexpr int kBlockSizeSearchSpace[3] = {1024, 512, 256};
+
+template <typename T>
+class PackSizeTraits;
+
+template <>
+class PackSizeTraits<Eigen::half> {
+ public:
+  static int const PackSize = 4;
+};
+
+template <>
+class PackSizeTraits<float> {
+ public:
+  static int const PackSize = 2;
+};
+
+template <typename T, int N>
+struct GetPackType {
+  using type =
+      typename std::aligned_storage<N * sizeof(T), N * sizeof(T)>::type;
+};
+
+template <typename T, int N>
+using PackType = typename GetPackType<T, N>::type;
+
+template <typename T, int N>
+union Pack {
+  static_assert(sizeof(PackType<T, N>) == sizeof(T) * N);
+  __device__ Pack() {
+    // do nothing
+  }
+  PackType<T, N> storage;
+  T elem[N];
+};
+
+template <typename T, typename... Ts, typename... Args>
+void LaunchVectorizedKernel(void (*func[3])(Ts...), dim3 grid_dim,
+                            dim3 block_dim, size_t shared_memory_size_bytes,
+                            gpuStream_t stream, int D, Args&&... arguments) {
+  // Cases each func will be used.
+  // func[0] : half and 4-elem aligned inputs
+  // func[1] : float/half and 2-elem aligned inputs
+  // func[1] : fallback for everything else
+  if (D % 4 == 0 && PackSizeTraits<T>::PackSize == 4) {
+    TF_CHECK_OK(GpuLaunchKernel(func[2], grid_dim, block_dim,
+                                shared_memory_size_bytes, stream,
+                                std::forward<Args>(arguments)...));
+  } else if (D % 2 == 0) {
+    TF_CHECK_OK(GpuLaunchKernel(func[1], grid_dim, block_dim,
+                                shared_memory_size_bytes, stream,
+                                std::forward<Args>(arguments)...));
+  } else {
+    TF_CHECK_OK(GpuLaunchKernel(func[0], grid_dim, block_dim,
+                                shared_memory_size_bytes, stream,
+                                std::forward<Args>(arguments)...));
+  }
+}
 
 template <typename T, typename U>
-__device__ inline U GetAs(const T* __restrict__ in, int offset) {
+inline __device__ U GetAs(const T* __restrict__ in, int offset) {
   return static_cast<U>(in[offset]);
+}
+
+template <typename T, typename U, int N>
+inline __device__ Pack<U, N> Cast(const Pack<T, N>& in) {
+  Pack<U, N> out;
+  for (int i = 0; i < N; ++i) {
+    out.elem[i] = static_cast<U>(in.elem[i]);
+  }
+  return out;
+}
+
+template <typename T, int N>
+inline __device__ Pack<T, N> Dot(const Pack<T, N>& a, const Pack<T, N>& b) {
+  Pack<T, N> pack;
+  for (int i = 0; i < N; i++) {
+    pack.elem[i] = a.elem[i] * b.elem[i];
+  }
+  return pack;
+}
+
+template <typename T, int N>
+inline __device__ Pack<T, N> Add(const Pack<T, N>& a, const Pack<T, N>& b) {
+  Pack<T, N> pack;
+  for (int i = 0; i < N; i++) {
+    pack.elem[i] = a.elem[i] + b.elem[i];
+  }
+  return pack;
+}
+
+template <typename T, int N>
+inline __device__ Pack<T, N> Load(const T* src, int offset = 0) {
+  Pack<T, N> pack;
+  pack.storage = *(reinterpret_cast<const PackType<T, N>*>(src) + offset / N);
+  return pack;
+}
+
+template <typename T, int N>
+inline __device__ void Store(T* dst, const Pack<T, N>& pack, int offset = 0) {
+  *(reinterpret_cast<PackType<T, N>*>(dst) + offset / N) = pack.storage;
+}
+
+template <typename T, typename U, int N>
+inline __device__ void CopyWithCast(const T* src, int src_offset, U* dst,
+                                    int dst_offset = 0) {
+  Pack<T, N> pack_t = Load<T, N>(src, src_offset);
+  Store<U, N>(dst, Cast<T, U, N>(pack_t), dst_offset);
+}
+
+template <typename T, int N>
+inline __device__ void CopyWithDot(const T* src, int offset, T* dst) {
+  // dst = src * dst
+  Store<T, N>(dst, Dot(Load<T, N>(src, offset), Load<T, N>(dst)));
+}
+
+template <typename T, typename U, int N>
+inline __device__ void CopyWithAffineAndCast(T* src, const T* scale,
+                                             int offset_s, const T* bias,
+                                             int offset_b, U* dst,
+                                             int offset_dst) {
+  // dst = src * scale + bias
+  Pack<T, N> dst_pack =
+      Add<T, N>(Dot<T, N>(Load<T, N>(src), Load<T, N>(scale, offset_s)),
+                Load<T, N>(bias, offset_b));
+  Store<U, N>(dst, Cast<T, U, N>(dst_pack), offset_dst);
 }
 
 template <typename T>
@@ -83,6 +213,10 @@ struct WFOp {
                                 const int z, WFGeneric<U>& wf_data) {
     // Channel last layout
     wf_data = WFGeneric<U>()(GetAs<T, U>(x, GetIndex(row, col, z)), wf_data);
+  }
+
+  inline __device__ void Update(const U val, WFGeneric<U>& wf_data) {
+    wf_data = WFGeneric<U>()(val, wf_data);
   }
 
   inline __device__ U Finalize(const WFGeneric<U> wf_data) {
@@ -175,8 +309,9 @@ struct IvarOp {
     return Compute(x, row, col, z, m);
   }
   __device__ U Finalize(const U sum) const {
-    return static_cast<U>(rsqrt(static_cast<float>(sum) / static_cast<float>(D) +
-                    static_cast<float>(epsilon)));
+    return static_cast<U>(
+        rsqrt(static_cast<float>(sum) / static_cast<float>(D) +
+              static_cast<float>(epsilon)));
   }
 };
 
@@ -188,8 +323,9 @@ struct DvarOp {
   const U* cache_mean;
   int64_t D;
   absl::optional<int64_t> C_;
-  DvarOp(const U* g_ptr, const T* x_ptr, const U* civar, const U* cmean, int64_t d)
-    : gamma(g_ptr), x(x_ptr), cache_ivar(civar), cache_mean(cmean), D(d) {}
+  DvarOp(const U* g_ptr, const T* x_ptr, const U* civar, const U* cmean,
+         int64_t d)
+      : gamma(g_ptr), x(x_ptr), cache_ivar(civar), cache_mean(cmean), D(d) {}
   inline void SetChannelDim(const int64_t c) { C_ = c; }
 
   __device__ inline U Compute(const T* dy, const int row, const int col) const {
@@ -201,17 +337,20 @@ struct DvarOp {
     } else {
       g_val = gamma[col];
     }
-    return curr * g_val * (x[row * D + col] - cache_mean[row]) *
-           (-0.5) * (cache_ivar[row] * cache_ivar[row] * cache_ivar[row]);
+    return curr * g_val * (x[row * D + col] - cache_mean[row]) * (-0.5) *
+           (cache_ivar[row] * cache_ivar[row] * cache_ivar[row]);
   }
+
+  __device__ inline U Compute(const U x, const U dy_dot_gamma, const int row) {
+    U ivar = cache_ivar[row];
+    return dy_dot_gamma * (x - cache_mean[row]) * (-0.5) * ivar * ivar * ivar;
+  }
+
   __device__ inline U Compute(const T* dy, const int row, const int col,
                               const int z) const {
     int64_t C = C_.value();
     U curr = GetAs<T, U>(dy, row * D * C + col * C + z);
-    U ivar = cache_ivar[row * C + z];
-    U me = cache_mean[row * C + z];
-    return curr * gamma[z] * (x[row * D * C + col * C + z] - me) * (-0.5) *
-           (ivar * ivar * ivar);
+    return Compute(x[row * D * C + col * C + z], curr * gamma[z], row * C + z);
   }
   __device__ U Finalize(const U sum) const { return sum; }
 };
@@ -224,8 +363,9 @@ struct DmeanOp {
   const U* cache_mean;
   int64_t D;
   absl::optional<int64_t> C_;
-  DmeanOp(const U* g_ptr, const T* x_ptr, const U* civar, const U* cmean, int64_t d)
-    : gamma(g_ptr), x(x_ptr), cache_ivar(civar), cache_mean(cmean), D(d) {}
+  DmeanOp(const U* g_ptr, const T* x_ptr, const U* civar, const U* cmean,
+          int64_t d)
+      : gamma(g_ptr), x(x_ptr), cache_ivar(civar), cache_mean(cmean), D(d) {}
   inline void SetChannelDim(const int64_t c) { C_ = c; }
 
   __device__ inline U Compute(const T* dy, const int row, const int col) const {
@@ -240,13 +380,16 @@ struct DmeanOp {
     return -curr * g_val * cache_ivar[row];
   }
 
+  __device__ inline U Compute(const U dy_dot_gamma, const int row) const {
+    return -dy_dot_gamma * cache_ivar[row];
+  }
+
   __device__ inline U Compute(const T* dy, const int row, const int col,
-                       const int z) const {
+                              const int z) const {
     // Channel last layout
     int64_t C = C_.value();
     U curr = GetAs<T, U>(dy, row * D * C + col * C + z);
-    U ivar = cache_ivar[row * C + z];
-    return -curr * gamma[z] * ivar;
+    return Compute(curr * gamma[z], row * C + z);
   }
 
   __device__ inline U Finalize(const U sum) const { return sum; }
@@ -254,21 +397,41 @@ struct DmeanOp {
 
 template <typename T, int thread_group_width = kWarpSize>
 __inline__ __device__ WFGeneric<T> WelfordWarpReduce(
-    const WFGeneric<T>& wf_thread) {
+    const WFGeneric<T>& wf_thread, bool is_broadcast = false) {
   const int num_warps = kBlockSize / thread_group_width;
   typedef gpuprim::WarpReduce<WFGeneric<T>> WarpReduce;
   __shared__ typename WarpReduce::TempStorage temp_storage[num_warps];
   const int local_warp_id = threadIdx.x / thread_group_width;
-  return WarpReduce(temp_storage[local_warp_id])
-      .Reduce(wf_thread, WFGeneric<T>());
+  auto wp_reduced =
+      WarpReduce(temp_storage[local_warp_id]).Reduce(wf_thread, WFGeneric<T>());
+  if (is_broadcast) {
+    return gpuprim::ShuffleIndex<thread_group_width, WFGeneric<T>>(
+        wp_reduced, 0, 0xffffffff);
+  }
+  return wp_reduced;
 }
 
-template <typename T>
-__inline__ __device__ WFGeneric<T> WelfordBlockAllReduce(
-    const WFGeneric<T>& wf_thread) {
-  typedef gpuprim::BlockReduce<WFGeneric<T>, kBlockSize> BlockReduce;
-  __shared__ typename BlockReduce::TempStorage temp_storage;
-  return BlockReduce(temp_storage).Reduce(wf_thread, WFGeneric<T>());
+template <typename T, typename Op, int BlockSize = kBlockSize>
+__inline__ __device__ T BlockAllReduce(const T& val, Op reduce_op,
+                                       bool is_broadcast = false) {
+  typedef gpuprim::BlockReduce<T, BlockSize> BlockReduce;
+  __shared__ union temp_storage {
+    typename BlockReduce::TempStorage reduce;
+    T broadcast[1];
+    temp_storage(){};
+    ~temp_storage(){};
+  } temp_storage;
+
+  T reduced = BlockReduce(temp_storage.reduce).Reduce(val, reduce_op);
+  if (!is_broadcast) {
+    return reduced;
+  }
+
+  if (threadIdx.x == 0) {
+    temp_storage.broadcast[0] = reduced;
+  }
+  __syncthreads();
+  return temp_storage.broadcast[0];
 }
 
 template <typename T, typename U, typename Op>
@@ -284,7 +447,8 @@ __global__ __launch_bounds__(1024) void GeneralNormRowReduceInToOutWelford(
       op.Update(in, k, i, wf_thread);
     }
 
-    WFGeneric<U> wf_row = WelfordBlockAllReduce<U>(wf_thread);
+    WFGeneric<U> wf_row =
+        BlockAllReduce<WFGeneric<U>, WFGeneric<U>>(wf_thread, WFGeneric<U>());
 
     if (tid == 0) {
       out1[k] = wf_row.mean;
@@ -294,7 +458,6 @@ __global__ __launch_bounds__(1024) void GeneralNormRowReduceInToOutWelford(
 }
 
 namespace LnNorm {
-
 template <typename T, typename U>
 struct YOp {
   const U* cache_mean;
@@ -302,12 +465,15 @@ struct YOp {
   const U* gamma;
   const U* beta;
   int64_t D;
-  __device__ inline T Compute(const T* x, const int row,
-                              const int col) const {
-    U mean = cache_mean[row];
-    U ivar = cache_ivar[row];
+  __device__ inline U ComputePartial(const U x, const int row) const {
+    // partial = (x - mean) * ivar;
+    return (x - cache_mean[row]) * cache_ivar[row];
+  }
+
+  __device__ inline T Compute(const T* x, const int row, const int col) const {
     U curr = GetAs<T, U>(x, row * D + col);
-    return static_cast<T>((curr - mean) * ivar * gamma[col] + beta[col]);
+    U partial = ComputePartial(curr, row);
+    return static_cast<T>(partial * gamma[col] + beta[col]);
   }
 };
 
@@ -320,15 +486,19 @@ struct DxOp {
   const U* dl_dvars;
   const U* dl_dmus;
   int64_t D;
-  __device__ inline T Compute(const T* dy, const int row,
-                              const int col) const {
+  __device__ inline U ComputePartial0(const U dy, const int row) const {
+    return dy * cache_ivar[row];
+  }
+  __device__ inline U ComputePartial1(const U x, const int row) const {
+    U dvar_dx = 2 * (x - cache_mean[row]);
+    return (dvar_dx * dl_dvars[row] + dl_dmus[row]) / static_cast<U>(D);
+  }
+
+  __device__ inline T Compute(const T* dy, const int row, const int col) const {
     U curr = GetAs<T, U>(dy, row * D + col);
-    U dl_di = curr * gamma[col] * cache_ivar[row];
-    U di_dx = 1.;
-    U dvar_dx = 2. * (x[row * D + col] - cache_mean[row]) / D;
-    U dmu_dx = 1. / D;
-    U dl_dx = dl_di * di_dx + dl_dvars[row] * dvar_dx + dl_dmus[row] * dmu_dx;
-    return static_cast<T>(dl_dx);
+    U partial0 = ComputePartial0(curr, row);
+    U partial1 = ComputePartial1(x[row * D + col], row);
+    return static_cast<T>(partial0 * gamma[col] + partial1);
   }
 };
 }  // namespace LnNorm
@@ -343,8 +513,8 @@ struct DwStatFusedOp {
   const U* cache_mean;
   int64_t C;
   int64_t D;
-  __device__ inline void Compute(const T* dy, const int row, const int col, U* ret1,
-                          U* ret2, U* ret3, U* ret4) const {
+  __device__ inline void Compute(const T* dy, const int row, const int col,
+                                 U* ret1, U* ret2, U* ret3, U* ret4) const {
     U curr = GetAs<T, U>(dy, row * D + col);
     U ivar = cache_ivar[row];
     U x_mean = x[row * D + col] - cache_mean[row];
@@ -356,8 +526,8 @@ struct DwStatFusedOp {
   }
 
   __device__ inline void Compute(const T* dy, const int row, const int col,
-                          const int z, U* ret1, U* ret2, U* ret3,
-                          U* ret4) const {
+                                 const int z, U* ret1, U* ret2, U* ret3,
+                                 U* ret4) const {
     // Channel last layout
     U curr = GetAs<T, U>(dy, row * D * C + col * C + z);
     U ivar = cache_ivar[row * C + z];
@@ -381,7 +551,7 @@ struct YOp {
   int64_t C;
   int64_t D;
   __device__ inline T Compute(const T* x, const int idx,
-                       const bool is_channel_first) const {
+                              const bool is_channel_first) const {
     U curr = GetAs<T, U>(x, idx);
     int gb_idx, cache_idx;
     if (is_channel_first) {
@@ -408,7 +578,7 @@ struct DxOp {
   int64_t C;
   int64_t D;
   __device__ inline T Compute(const T* dy, const int idx,
-                       const bool is_channel_first) const {
+                              const bool is_channel_first) const {
     U curr = GetAs<T, U>(dy, idx);
     U dl_dx;
     if (is_channel_first) {
@@ -443,14 +613,14 @@ struct DxFusedOp {
   int64_t C;
   int64_t D;
   __device__ inline T Compute(const T* dy, const int idx,
-                       const bool is_channel_first) const {
+                              const bool is_channel_first) const {
     U curr = GetAs<T, U>(dy, idx);
     U dl_dx;
     if (is_channel_first) {
       int row = idx / D;
-      dl_dx =
-          (dl_dvars[row] * (x[idx] - cache_mean[row]) + dl_dmus[row]) / static_cast<U>(D) +
-          curr * gamma[row % C] * cache_ivar[row];
+      dl_dx = (dl_dvars[row] * (x[idx] - cache_mean[row]) + dl_dmus[row]) /
+                  static_cast<U>(D) +
+              curr * gamma[row % C] * cache_ivar[row];
     } else {
       int col = idx % C;
       int cache_idx = idx / (C * D) * C + idx % C;

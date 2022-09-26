@@ -108,7 +108,7 @@ class NvNormsLayerNormOpTest(test.TestCase):
         dy, x, gamma, cache["mean"], cache["istd"], axis=axis)
     dgamma_ref, dbeta_ref, dx_ref = layer_norm_grad_np(
         x_np, dy_np, gamma_np, cache, axis=validated_axis)
-    self.assertAllClose(dx_ref, dx, rtol=0.01, atol=0.01)
+    self.assertAllClose(dx_ref, dx, rtol=0.01, atol=0.08)
     self.assertAllClose(dbeta_ref, dbeta, rtol=0.01, atol=0.01)
     self.assertAllClose(dgamma_ref, dgamma, rtol=0.02, atol=0.02)
   
@@ -126,6 +126,17 @@ class NvNormsLayerNormOpTest(test.TestCase):
         x_shape.append(2**D)
         self._runForward(x_shape, dtype, axis)
         self._runBackward(x_shape, dtype, axis)
+  
+  @test_util.run_gpu_only
+  def testFusedLayerNormOpWithNonTypicalInputShapes(self):
+    with self.cached_session(use_gpu=True):
+      dtypes = [tf.float16, tf.float32]
+      N = 2
+      features = [11, 12, 31, 2003, 4001, 5002, 2**14 + 1, 2**16 + 2, 2**18 + 3]
+      for dtype, D in itertools.product(dtypes, features):
+        x_shape = [N, D]
+        self._runForward(x_shape, dtype, [-1])
+        self._runBackward(x_shape, dtype, [-1])
 
   @test_util.run_gpu_only
   def testFusedLayerNormEmptyInput(self):
