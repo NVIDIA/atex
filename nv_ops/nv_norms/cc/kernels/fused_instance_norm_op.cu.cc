@@ -27,9 +27,9 @@ inline int DivUp(int a, int b) { return (a + b - 1) / b; }
 
 template <typename T, typename U, typename Op>
 __global__ __launch_bounds__(1024) void InstanceNormToTempWelford(
-    const T* __restrict__ x, const int N, const int C, const int D,
-    U* __restrict__ temp_mean, U* __restrict__ temp_m2,
-    U* __restrict__ temp_count, Op op, const bool is_channel_first = true) {
+    const T* __restrict__ x, int N, int C, int D, U* __restrict__ temp_mean,
+    U* __restrict__ temp_m2, U* __restrict__ temp_count, Op op,
+    bool is_channel_first = true) {
   if (is_channel_first) {
     const int row_offset = threadIdx.x + blockIdx.x * blockDim.x;
 
@@ -71,7 +71,7 @@ __global__ __launch_bounds__(1024) void InstanceNormToTempWelford(
 template <typename U, typename Op>
 __global__ __launch_bounds__(1024) void InstanceNormTempToOutWelford(
     const U* __restrict__ temp_mean, const U* __restrict__ temp_m2,
-    const U* __restrict__ temp_count, const int N, const int C, const int cols,
+    const U* __restrict__ temp_count, int N, int C, int cols,
     U* __restrict__ cache_mean, U* __restrict__ cache_ivar, Op op) {
   for (int k = blockIdx.x; k < N * C; k += gridDim.x) {
     WFGeneric<U> wf_partial;
@@ -93,8 +93,8 @@ __global__ __launch_bounds__(1024) void InstanceNormTempToOutWelford(
 template <typename U, typename Op>
 __global__ __launch_bounds__(1024) void InstanceNormRowReduceTempToOutFused(
     const U* __restrict__ temp1, const U* __restrict__ temp2,
-    const U* __restrict__ temp3, const U* __restrict__ temp4, const int N,
-    const int C, const int cols, U* __restrict__ cache1, U* __restrict__ cache2,
+    const U* __restrict__ temp3, const U* __restrict__ temp4, int N, int C,
+    int cols, U* __restrict__ cache1, U* __restrict__ cache2,
     U* __restrict__ cache3, U* __restrict__ cache4, Op op) {
   typedef cub::BlockReduce<U, kBlockSize> BlockReduce;
   __shared__ typename BlockReduce::TempStorage temp_storage;
@@ -137,8 +137,8 @@ __global__ __launch_bounds__(1024) void InstanceNormRowReduceTempToOutFused(
 
 template <typename U, typename Op>
 __global__ __launch_bounds__(1024) void InstanceNormRowReduceTempToOut(
-    const U* __restrict__ temp, const int N, const int C, const int cols,
-    U* __restrict__ cache, Op op) {
+    const U* __restrict__ temp, int N, int C, int cols, U* __restrict__ cache,
+    Op op) {
   typedef cub::BlockReduce<U, kBlockSize> BlockReduce;
   __shared__ typename BlockReduce::TempStorage temp_storage;
   for (int k = blockIdx.x; k < N * C; k += gridDim.x) {
@@ -158,8 +158,8 @@ __global__ __launch_bounds__(1024) void InstanceNormRowReduceTempToOut(
 
 template <typename T, typename U, typename Op>
 __global__ __launch_bounds__(1024) void InstanceNormRowReduceInToOutFused(
-    const T* __restrict__ in, const int N, const int D, U* out1, U* out2,
-    U* out3, U* out4, Op op) {
+    const T* __restrict__ in, int N, int D, U* out1, U* out2, U* out3, U* out4,
+    Op op) {
   const int tid = threadIdx.x;
 
   typedef cub::BlockReduce<U, kBlockSize> BlockReduce;
@@ -199,8 +199,8 @@ __global__ __launch_bounds__(1024) void InstanceNormRowReduceInToOutFused(
 
 template <typename T, typename U, typename Op1, typename Op2>
 __global__ __launch_bounds__(1024) void InstanceNormRowReduceInToOut(
-    const T* __restrict__ in, const int N, const int D, U* out1, U* out2,
-    Op1 op1, Op2 op2) {
+    const T* __restrict__ in, int N, int D, U* out1, U* out2, Op1 op1,
+    Op2 op2) {
   const int tid = threadIdx.x;
 
   typedef cub::BlockReduce<U, kBlockSize> BlockReduce;
@@ -241,9 +241,8 @@ __global__ __launch_bounds__(1024) void InstanceNormRowReduceInToOut(
 template <typename T, typename U>
 __global__ __launch_bounds__(1024) void InstanceNormGradBetaGamma(
     const T* __restrict__ dy, const T* __restrict__ x,
-    const U* __restrict__ cache_mean, const U* __restrict__ cache_ivar,
-    const int N, const int C, const int D, U* __restrict__ dgamma,
-    U* __restrict__ dbeta) {
+    const U* __restrict__ cache_mean, const U* __restrict__ cache_ivar, int N,
+    int C, int D, U* __restrict__ dgamma, U* __restrict__ dbeta) {
   const int tid = threadIdx.x + blockIdx.x * blockDim.x;
 
   if (tid >= C) return;
@@ -265,7 +264,7 @@ __global__ __launch_bounds__(1024) void InstanceNormGradBetaGamma(
 }
 
 template <typename U>
-__global__ __launch_bounds__(1024) void ReduceNCtoC(const int N, const int C,
+__global__ __launch_bounds__(1024) void ReduceNCtoC(int N, int C,
                                                     const U* __restrict__ in1,
                                                     const U* __restrict__ in2,
                                                     U* out1, U* out2) {
@@ -286,8 +285,8 @@ __global__ __launch_bounds__(1024) void ReduceNCtoC(const int N, const int C,
 
 template <typename T, typename U, typename Op>
 __global__ __launch_bounds__(1024) void InstanceNormRowReduceInToOutWarpFused(
-    const T* __restrict__ in, const int N, const int C, const int D, U* out1,
-    U* out2, U* out3, U* out4, Op op, const bool is_channel_first) {
+    const T* __restrict__ in, int N, int C, int D, U* out1, U* out2, U* out3,
+    U* out4, Op op, bool is_channel_first) {
   const int tid = threadIdx.x % kWarpSize;
   const int local_warp_id = threadIdx.x / kWarpSize;
   const int warp_id = blockIdx.x * warp_per_block + local_warp_id;
@@ -339,8 +338,8 @@ __global__ __launch_bounds__(1024) void InstanceNormRowReduceInToOutWarpFused(
 
 template <typename T, typename U, typename Op1, typename Op2>
 __global__ __launch_bounds__(1024) void InstanceNormRowReduceInToOutWarp(
-    const T* __restrict__ in, const int N, const int C, const int D, U* out1,
-    U* out2, Op1 op1, Op2 op2, const bool is_channel_first) {
+    const T* __restrict__ in, int N, int C, int D, U* out1, U* out2, Op1 op1,
+    Op2 op2, bool is_channel_first) {
   const int tid = threadIdx.x % kWarpSize;
   const int local_warp_id = threadIdx.x / kWarpSize;
   const int warp_id = blockIdx.x * warp_per_block + local_warp_id;
@@ -387,8 +386,8 @@ __global__ __launch_bounds__(1024) void InstanceNormRowReduceInToOutWarp(
 
 template <typename T, typename U, typename Op>
 __global__ __launch_bounds__(1024) void InstanceNormRowReduceInToTemp(
-    const T* __restrict__ x, const int N, const int C, const int D,
-    U* __restrict__ temp, Op op, const bool is_channel_first = true) {
+    const T* __restrict__ x, int N, int C, int D, U* __restrict__ temp, Op op,
+    bool is_channel_first = true) {
   if (is_channel_first) {
     typedef cub::BlockReduce<U, kBlockSize> BlockReduce;
     __shared__ typename BlockReduce::TempStorage temp_storage;
@@ -423,9 +422,9 @@ __global__ __launch_bounds__(1024) void InstanceNormRowReduceInToTemp(
 
 template <typename T, typename U, typename Op>
 __global__ __launch_bounds__(1024) void InstanceNormRowReduceInToTempFused(
-    const T* __restrict__ x, const int N, const int C, const int D,
-    U* __restrict__ temp1, U* __restrict__ temp2, U* __restrict__ temp3,
-    U* __restrict__ temp4, Op op, const bool is_channel_first = true) {
+    const T* __restrict__ x, int N, int C, int D, U* __restrict__ temp1,
+    U* __restrict__ temp2, U* __restrict__ temp3, U* __restrict__ temp4, Op op,
+    bool is_channel_first = true) {
   if (is_channel_first) {
     typedef cub::BlockReduce<U, kBlockSize> BlockReduce;
     __shared__ typename BlockReduce::TempStorage temp_storage;
@@ -489,8 +488,8 @@ __global__ __launch_bounds__(1024) void InstanceNormRowReduceInToTempFused(
 
 template <typename T, typename Op>
 __global__ __launch_bounds__(1024) void InstanceNormUpdateFused(
-    const T* __restrict__ in, const int N, const int D, T* out, Op op,
-    const bool is_channel_first = true) {
+    const T* __restrict__ in, int N, int D, T* out, Op op,
+    bool is_channel_first = true) {
   const int tid = threadIdx.x + blockIdx.x * blockDim.x;
   if (tid >= N) return;
   for (int row_idx = tid; row_idx < N; row_idx += gridDim.x * blockDim.x) {
@@ -500,8 +499,8 @@ __global__ __launch_bounds__(1024) void InstanceNormUpdateFused(
 
 template <typename T, typename Op>
 __global__ __launch_bounds__(1024) void InstanceNormUpdate(
-    const T* __restrict__ in, const int N, const int D, T* out, Op op,
-    const bool is_channel_first = true) {
+    const T* __restrict__ in, int N, int D, T* out, Op op,
+    bool is_channel_first = true) {
   const int tid = threadIdx.x + blockIdx.x * blockDim.x;
   if (tid >= N) return;
   for (int row_idx = tid; row_idx < N; row_idx += gridDim.x * blockDim.x) {
@@ -510,11 +509,10 @@ __global__ __launch_bounds__(1024) void InstanceNormUpdate(
 }
 
 template <typename T, typename U, typename Op>
-void InstanceNormReductionsChannelFirstFused(OpKernelContext* context,
-                                             const int N, const int C,
-                                             const int D, const T* x, U* temp_1,
-                                             U* temp_2, U* temp_3, U* temp_4,
-                                             Op op) {
+void InstanceNormReductionsChannelFirstFused(OpKernelContext* context, int N,
+                                             int C, int D, const T* x,
+                                             U* temp_1, U* temp_2, U* temp_3,
+                                             U* temp_4, Op op) {
   const bool is_channel_first = true;
   const GPUDevice& d = context->eigen_device<GPUDevice>();
   auto NxC = N * C;
@@ -578,10 +576,9 @@ void InstanceNormReductionsChannelFirstFused(OpKernelContext* context,
 }
 
 template <typename T, typename U, typename Op1, typename Op2>
-void InstanceNormReductionsChannelFirst(OpKernelContext* context, const int N,
-                                        const int C, const int D, const T* x,
-                                        U* temp_1, U* temp_2, Op1 op1,
-                                        Op2 op2) {
+void InstanceNormReductionsChannelFirst(OpKernelContext* context, int N, int C,
+                                        int D, const T* x, U* temp_1, U* temp_2,
+                                        Op1 op1, Op2 op2) {
   const bool is_channel_first = true;
   const GPUDevice& d = context->eigen_device<GPUDevice>();
   auto NxC = N * C;
@@ -631,9 +628,8 @@ void InstanceNormReductionsChannelFirst(OpKernelContext* context, const int N,
 }
 
 template <typename T, typename U, typename Op>
-void InstanceNormReductionsChannelFirstWelford(OpKernelContext* context,
-                                               const int N, const int C,
-                                               const int D, const T* x,
+void InstanceNormReductionsChannelFirstWelford(OpKernelContext* context, int N,
+                                               int C, int D, const T* x,
                                                U* temp_1, U* temp_2, Op op) {
   const bool is_channel_first = true;
   const GPUDevice& d = context->eigen_device<GPUDevice>();
@@ -683,9 +679,9 @@ void InstanceNormReductionsChannelFirstWelford(OpKernelContext* context,
 }
 
 template <typename T, typename U, typename Op1, typename Op2>
-void InstanceNormReductionsChannelLast(OpKernelContext* context, const int N,
-                                       const int C, const int D, const T* x,
-                                       U* temp_1, U* temp_2, Op1 op1, Op2 op2) {
+void InstanceNormReductionsChannelLast(OpKernelContext* context, int N, int C,
+                                       int D, const T* x, U* temp_1, U* temp_2,
+                                       Op1 op1, Op2 op2) {
   const GPUDevice& d = context->eigen_device<GPUDevice>();
 
   dim3 threads(kWarpSize, warp_per_block);
@@ -722,9 +718,8 @@ void InstanceNormReductionsChannelLast(OpKernelContext* context, const int N,
 }
 
 template <typename T, typename U, typename Op>
-void InstanceNormReductionsChannelLastWelford(OpKernelContext* context,
-                                              const int N, const int C,
-                                              const int D, const T* x,
+void InstanceNormReductionsChannelLastWelford(OpKernelContext* context, int N,
+                                              int C, int D, const T* x,
                                               U* temp_1, U* temp_2, Op op) {
   const GPUDevice& d = context->eigen_device<GPUDevice>();
 
@@ -759,9 +754,8 @@ void InstanceNormReductionsChannelLastWelford(OpKernelContext* context,
 }
 
 template <typename T, typename U, typename Op>
-void InstanceNormReductionsChannelLastFused(OpKernelContext* context,
-                                            const int N, const int C,
-                                            const int D, const T* x, U* temp_1,
+void InstanceNormReductionsChannelLastFused(OpKernelContext* context, int N,
+                                            int C, int D, const T* x, U* temp_1,
                                             U* temp_2, U* temp_3, U* temp_4,
                                             Op op) {
   const GPUDevice& d = context->eigen_device<GPUDevice>();
@@ -805,10 +799,9 @@ void InstanceNormReductionsChannelLastFused(OpKernelContext* context,
 template <typename T, typename U>
 void InstanceNormDataWeightsGrad(OpKernelContext* context, const T* dy,
                                  const T* x, const U* cache_mean,
-                                 const U* cache_ivar, const U* gamma,
-                                 const int N, const int C, const int D,
-                                 U* temp_1, U* temp_2, U* temp_3, U* temp_4,
-                                 const bool is_channel_first) {
+                                 const U* cache_ivar, const U* gamma, int N,
+                                 int C, int D, U* temp_1, U* temp_2, U* temp_3,
+                                 U* temp_4, bool is_channel_first) {
   const GPUDevice& d = context->eigen_device<GPUDevice>();
   bool use_single_warp = (D <= kWarpSize);
 
@@ -847,7 +840,7 @@ template <typename T, typename U>
 struct FusedInstanceNorm<GPUDevice, T, U> {
   void operator()(OpKernelContext* context, const Tensor& x_input,
                   const Tensor& scale_input, const Tensor& offset_input,
-                  U epsilon, const bool is_channel_first, Tensor* y_output,
+                  U epsilon, bool is_channel_first, Tensor* y_output,
                   Tensor* saved_mean_output, Tensor* saved_inv_var_output) {
     if (x_input.shape().num_elements() == 0) {
       return;
@@ -911,7 +904,7 @@ struct FusedInstanceNormGrad<GPUDevice, T, U> {
                   const Tensor& x_input, const Tensor& scale_input,
                   const Tensor& saved_mean_input,
                   const Tensor& saved_inv_var_input, U epsilon,
-                  const bool is_channel_first, Tensor* x_backprop_output,
+                  bool is_channel_first, Tensor* x_backprop_output,
                   Tensor* scale_backprop_output,
                   Tensor* offset_backprop_output) {
     if (x_input.shape().num_elements() == 0) {
@@ -947,8 +940,8 @@ struct FusedInstanceNormGrad<GPUDevice, T, U> {
                                       gamma, N, C, D, temp_1, temp_2, dgamma,
                                       dbeta, is_channel_first);
     // The temp_1 and temp_2 are dl_dmu and dl_dvars respectively.
-    DxFusedOp<T, U> dx_ops{x, cache_mean, cache_ivar, gamma, temp_2, temp_1, C,
-                           D};
+    DxFusedOp<T, U> dx_ops{x, cache_mean, cache_ivar, gamma, temp_2, temp_1,
+                           C, D};
     int min_work_per_thread = 100;
 
     TF_CHECK_OK(GpuLaunchKernel(

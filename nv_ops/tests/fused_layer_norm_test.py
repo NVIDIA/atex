@@ -139,6 +139,18 @@ class NvNormsLayerNormOpTest(test.TestCase):
         self._runBackward(x_shape, dtype, [-1])
 
   @test_util.run_gpu_only
+  def testFusedLayerNormOpWithBrittleShapes(self):
+    with self.cached_session(use_gpu=True):
+      x_shapes = [
+          [12000, 128, 8, 8],
+          [1200, 128, 8, 6],
+          [2, 128, 8, 8],
+          [1, 64, 384, 276]]
+      for x_shape in x_shapes:
+        self._runForward(x_shape, tf.float32, [1, 2, 3])
+        self._runBackward(x_shape, tf.float32, [1, 2, 3])
+
+  @test_util.run_gpu_only
   def testFusedLayerNormEmptyInput(self):
     with self.cached_session(use_gpu=True):
       x = tf.constant([], dtype=tf.float32)

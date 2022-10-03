@@ -25,7 +25,7 @@ __global__ void LayerNormGradWarpImpl(const T* x, const T* dy,
                                       const int64_t rows, const int64_t cols,
                                       const ComputeType* cache_mean,
                                       const ComputeType* cache_ivar, Op1 op1,
-                                      Op2 op2, T* dx, const bool is_padding) {
+                                      Op2 op2, T* dx, bool is_padding) {
   constexpr int num_packs = ColsPerThread / PackSize;
 
   const int lane_id = threadIdx.x % kWarpSize;
@@ -102,7 +102,7 @@ __global__ void LayerNormGradWarpImpl(const T* x, const T* dy,
 
 template <typename T, typename U, typename Op1, typename Op2>
 __global__ __launch_bounds__(1024) void LayerNormRowReduceInToOutWarp(
-    const T* __restrict__ in, const int N, const int D, U* __restrict__ out1,
+    const T* __restrict__ in, int N, int D, U* __restrict__ out1,
     U* __restrict__ out2, Op1 op1, Op2 op2) {
   const int tid = threadIdx.x % kWarpSize;
 
@@ -230,7 +230,7 @@ __global__ void LayerNormGradBlockSMemImpl(
 
     ComputeType dldvar = BlockAllReduce<ComputeType, gpuprim::Sum, BlockSize>(
         partial_sum_1, gpuprim::Sum(), true);
-
+    __syncthreads();
     ComputeType dldmu = BlockAllReduce<ComputeType, gpuprim::Sum, BlockSize>(
         partial_sum_2, gpuprim::Sum(), true);
 
@@ -369,8 +369,8 @@ Status TryDispatchLayerNormGradBlockSMemImpl(
 
 template <typename T, typename ComputeType, typename Op>
 __global__ void LayerNormWarpImplWelford(const T* x, const ComputeType* gamma,
-                                         const ComputeType* beta,
-                                         const int rows, const int cols, T* y,
+                                         const ComputeType* beta, int rows,
+                                         int cols, T* y,
                                          ComputeType* __restrict__ out1,
                                          ComputeType* __restrict__ out2, Op op,
                                          bool is_padding) {
@@ -434,7 +434,7 @@ __global__ void LayerNormWarpImplWelford(const T* x, const ComputeType* gamma,
 template <typename T, typename U, typename Op>
 __global__ __launch_bounds__(1024) void LayerNormRowReduceInToOutWarpWelford(
     const T* __restrict__ in, const U* __restrict__ gamma,
-    const U* __restrict__ beta, const int N, const int D, U* __restrict__ out1,
+    const U* __restrict__ beta, int N, int D, U* __restrict__ out1,
     U* __restrict__ out2, T* __restrict__ y, Op op) {
   const int tid = threadIdx.x % kWarpSize;
 
@@ -471,8 +471,8 @@ __global__ __launch_bounds__(1024) void LayerNormRowReduceInToOutWarpWelford(
 
 template <typename T, typename U, typename Op1, typename Op2>
 __global__ __launch_bounds__(1024) void LayerNormRowReduceInToOut(
-    const T* __restrict__ in, const int N, const int D, U* out1, U* out2,
-    Op1 op1, Op2 op2) {
+    const T* __restrict__ in, int N, int D, U* out1, U* out2, Op1 op1,
+    Op2 op2) {
   const int tid = threadIdx.x;
 
   typedef gpuprim::BlockReduce<U, kBlockSize> BlockReduce;
@@ -511,7 +511,7 @@ __global__ __launch_bounds__(1024) void LayerNormRowReduceInToOut(
 
 template <typename T, typename ComputeType, int PackSize>
 __global__ __launch_bounds__(1024) void LayerNormRowReduceInToTemp(
-    const T* x, const T* dy, const ComputeType* gamma, const int N, const int D,
+    const T* x, const T* dy, const ComputeType* gamma, int N, int D,
     ComputeType* __restrict__ temp_1, ComputeType* __restrict__ temp_2,
     DvarOp<T, ComputeType> op1, DmeanOp<T, ComputeType> op2) {
   const int row_offset = threadIdx.x + blockIdx.x * blockDim.x;
@@ -538,6 +538,7 @@ __global__ __launch_bounds__(1024) void LayerNormRowReduceInToTemp(
 
     ComputeType sum1 =
         BlockAllReduce<ComputeType, gpuprim::Sum>(partial_sum1, gpuprim::Sum());
+    __syncthreads();
     ComputeType sum2 =
         BlockAllReduce<ComputeType, gpuprim::Sum>(partial_sum2, gpuprim::Sum());
 
@@ -550,7 +551,7 @@ __global__ __launch_bounds__(1024) void LayerNormRowReduceInToTemp(
 
 template <typename T, typename ComputeType>
 void (*LayerNormRowReduceInToTempCandidates[3])(
-    const T*, const T*, const ComputeType*, const int N, const int D,
+    const T*, const T*, const ComputeType*, int N, int D,
     ComputeType* __restrict__, ComputeType* __restrict__,
     DvarOp<T, ComputeType>,
     DmeanOp<T, ComputeType>){LayerNormRowReduceInToTemp<T, ComputeType, 1>,
@@ -559,7 +560,7 @@ void (*LayerNormRowReduceInToTempCandidates[3])(
 
 template <typename T, typename ComputeType, int PackSize>
 __global__ __launch_bounds__(1024) void LayerNormRowReduceInToTempWelford(
-    const T* x, const int N, const int D, ComputeType* __restrict__ temp_mean,
+    const T* x, int N, int D, ComputeType* __restrict__ temp_mean,
     ComputeType* __restrict__ temp_m2, ComputeType* __restrict__ temp_count,
     WFOp<T, ComputeType> op) {
   const int row_offset = threadIdx.x + blockIdx.x * blockDim.x;
@@ -590,8 +591,8 @@ __global__ __launch_bounds__(1024) void LayerNormRowReduceInToTempWelford(
 
 template <typename T, typename ComputeType>
 void (*LayerNormRowReduceInToTempWelfordCandidates[3])(
-    const T*, const int, const int, ComputeType* __restrict__,
-    ComputeType* __restrict__, ComputeType* __restrict__,
+    const T*, int, int, ComputeType* __restrict__, ComputeType* __restrict__,
+    ComputeType* __restrict__,
     WFOp<T, ComputeType>){LayerNormRowReduceInToTempWelford<T, ComputeType, 1>,
                           LayerNormRowReduceInToTempWelford<T, ComputeType, 2>,
                           LayerNormRowReduceInToTempWelford<T, ComputeType, 4>};
@@ -599,7 +600,7 @@ void (*LayerNormRowReduceInToTempWelfordCandidates[3])(
 template <typename U, typename Op>
 __global__ __launch_bounds__(1024) void LayerNormRowReduceTempToOutWelford(
     const U* __restrict__ temp_mean, const U* __restrict__ temp_m2,
-    const U* __restrict__ temp_count, const int N, const int cols,
+    const U* __restrict__ temp_count, int N, int cols,
     U* __restrict__ cache_mean, U* __restrict__ cache_ivar, Op op) {
   for (int k = blockIdx.x; k < N; k += gridDim.x) {
     WFGeneric<U> wf_partial;
@@ -621,9 +622,8 @@ __global__ __launch_bounds__(1024) void LayerNormRowReduceTempToOutWelford(
 
 template <typename T>
 __global__ __launch_bounds__(1024) void LayerNormRowReduceTempToOut(
-    const int N, const int cols, const T* __restrict__ temp_1,
-    const T* __restrict__ temp_2, T* __restrict__ cache_1,
-    T* __restrict__ cache_2) {
+    int N, int cols, T* __restrict__ temp_1, T* __restrict__ temp_2) {
+  // Inplace reduction
   typedef gpuprim::BlockReduce<T, kBlockSize> BlockReduce;
   __shared__ typename BlockReduce::TempStorage temp_storage;
   for (int k = blockIdx.x; k < N; k += gridDim.x) {
@@ -639,16 +639,16 @@ __global__ __launch_bounds__(1024) void LayerNormRowReduceTempToOut(
     T sum_2 = BlockReduce(temp_storage).Sum(partial_sum2);
 
     if (threadIdx.x == 0) {
-      cache_1[k] = sum_1;
-      cache_2[k] = sum_2;
+      temp_1[k * cols] = sum_1;
+      temp_2[k * cols] = sum_2;
     }
   }
 }
 
 template <typename T, typename ComputeType, int PackSize>
 __global__ __launch_bounds__(1024) void LayerNormForwardUpdate(
-    const T* x, const ComputeType* gamma, const ComputeType* beta, const int N,
-    const int D, T* y, YOp<T, ComputeType> op) {
+    const T* x, const ComputeType* gamma, const ComputeType* beta, int N, int D,
+    T* y, YOp<T, ComputeType> op) {
   const int row_offset = threadIdx.x + blockIdx.x * blockDim.x;
   const int num_packs = static_cast<int>(D) / PackSize;
   for (int row_idx = blockIdx.y; row_idx < N; row_idx += gridDim.y) {
@@ -673,16 +673,16 @@ __global__ __launch_bounds__(1024) void LayerNormForwardUpdate(
 
 template <typename T, typename ComputeType>
 void (*LayerNormForwardUpdateCandidates[3])(const T*, const ComputeType*,
-                                            const ComputeType*, const int,
-                                            const int, T*, YOp<T, ComputeType>){
+                                            const ComputeType*, int, int, T*,
+                                            YOp<T, ComputeType>){
     LayerNormForwardUpdate<T, ComputeType, 1>,
     LayerNormForwardUpdate<T, ComputeType, 2>,
     LayerNormForwardUpdate<T, ComputeType, 4>};
 
 template <typename T, typename ComputeType, int PackSize>
 __global__ __launch_bounds__(1024) void LayerNormBackwardUpdate(
-    const T* x, const T* dy, const ComputeType* gamma, const int N, const int D,
-    T* dx, DxOp<T, ComputeType> op) {
+    const T* x, const T* dy, const ComputeType* gamma, int N, int D,
+    int dl_stride, T* dx, DxOp<T, ComputeType> op) {
   const int row_offset = threadIdx.x + blockIdx.x * blockDim.x;
   const int num_packs = static_cast<int>(D) / PackSize;
   for (int row_idx = blockIdx.y; row_idx < N; row_idx += gridDim.y) {
@@ -697,7 +697,7 @@ __global__ __launch_bounds__(1024) void LayerNormBackwardUpdate(
 
       for (int i = 0; i < PackSize; ++i) {
         pack_dy[i] = op.ComputePartial0(pack_dy[i], row_idx);
-        pack_x[i] = op.ComputePartial1(pack_x[i], row_idx);
+        pack_x[i] = op.ComputePartial1(pack_x[i], row_idx, dl_stride);
       }
 
       CopyWithAffineAndCast<ComputeType, T, PackSize>(
@@ -708,16 +708,15 @@ __global__ __launch_bounds__(1024) void LayerNormBackwardUpdate(
 
 template <typename T, typename ComputeType>
 void (*LayerNormBackwardUpdateCandidates[3])(const T*, const T*,
-                                             const ComputeType*, const int,
-                                             const int, T*,
-                                             DxOp<T, ComputeType>){
+                                             const ComputeType*, int, int, int,
+                                             T*, DxOp<T, ComputeType>){
     LayerNormBackwardUpdate<T, ComputeType, 1>,
     LayerNormBackwardUpdate<T, ComputeType, 2>,
     LayerNormBackwardUpdate<T, ComputeType, 4>};
 
 template <typename T, typename Op>
 __global__ __launch_bounds__(1024) void LayerNormUpdate(
-    const T* __restrict__ in, const int N, const int D, T* out, Op op) {
+    const T* __restrict__ in, int N, int D, T* out, Op op) {
   const int tid = threadIdx.x + blockIdx.x * blockDim.x;
 
   if (tid >= N * D) return;
@@ -730,8 +729,8 @@ __global__ __launch_bounds__(1024) void LayerNormUpdate(
 template <typename T, typename U>
 __global__ __launch_bounds__(1024) void LayerNormGradBetaGamma(
     const T* __restrict__ dy, const T* __restrict__ x,
-    const U* __restrict__ cache_mean, const U* __restrict__ cache_ivar,
-    const int N, const int D, U* __restrict__ dgamma, U* __restrict__ dbeta) {
+    const U* __restrict__ cache_mean, const U* __restrict__ cache_ivar, int N,
+    int D, U* __restrict__ dgamma, U* __restrict__ dbeta) {
   const int tid = threadIdx.x + blockIdx.x * blockDim.x;
 
   if (tid >= D) return;
@@ -751,9 +750,8 @@ __global__ __launch_bounds__(1024) void LayerNormGradBetaGamma(
 template <typename T, typename U>
 __global__ __launch_bounds__(1024) void LayerNormGradBetaGammaInToTemp(
     const T* __restrict__ dy, const T* __restrict__ x,
-    const U* __restrict__ cache_mean, const U* __restrict__ cache_ivar,
-    const int N, const int D, const int rows, U* __restrict__ tgamma,
-    U* __restrict__ tbeta) {
+    const U* __restrict__ cache_mean, const U* __restrict__ cache_ivar, int N,
+    int D, int rows, U* __restrict__ tgamma, U* __restrict__ tbeta) {
   const int tid = threadIdx.x + blockIdx.x * blockDim.x;
   if (tid >= D) return;
 
@@ -771,8 +769,8 @@ __global__ __launch_bounds__(1024) void LayerNormGradBetaGammaInToTemp(
 
 template <typename U>
 __global__ __launch_bounds__(1024) void LayerNormGradBetaGammaTempToOut(
-    const U* __restrict__ tg, const U* __restrict__ tb, const int N,
-    const int D, U* __restrict__ dgamma, U* __restrict__ dbeta) {
+    const U* __restrict__ tg, const U* __restrict__ tb, int N, int D,
+    U* __restrict__ dgamma, U* __restrict__ dbeta) {
   const int tid = threadIdx.x + blockIdx.x * blockDim.x;
 
   if (tid >= D) return;
@@ -935,15 +933,6 @@ struct FusedLayerNormGrad<GPUDevice, T, U> {
           kBlockSize, 0, d.stream(), temp_dgamma, temp_dbeta, reduced_rows,
           static_cast<int>(D), dgamma, dbeta));
     }
-
-    Tensor scratch_dl_dvars, scratch_dl_dmus;
-    OP_REQUIRES_OK(context, context->allocate_temp(DataTypeToEnum<U>::value,
-                                                   {N}, &scratch_dl_dvars));
-    OP_REQUIRES_OK(context, context->allocate_temp(DataTypeToEnum<U>::value,
-                                                   {N}, &scratch_dl_dmus));
-    U* temp_1 = scratch_dl_dvars.flat<U>().data();
-    U* temp_2 = scratch_dl_dmus.flat<U>().data();
-
     bool use_single_warp = (D <= kMaxWorkPerThread * kWarpSize);
     const int min_workload_per_thread = 50;
 
@@ -952,15 +941,23 @@ struct FusedLayerNormGrad<GPUDevice, T, U> {
 
     if (use_single_warp) {
       if (D < kWarpSize) {
+        Tensor scratch_dl_dvars, scratch_dl_dmus;
+        OP_REQUIRES_OK(context, context->allocate_temp(DataTypeToEnum<U>::value,
+                                                       {N}, &scratch_dl_dvars));
+        OP_REQUIRES_OK(context, context->allocate_temp(DataTypeToEnum<U>::value,
+                                                       {N}, &scratch_dl_dmus));
+        U* temp_1 = scratch_dl_dvars.flat<U>().data();
+        U* temp_2 = scratch_dl_dmus.flat<U>().data();
+
         TF_CHECK_OK(GpuLaunchKernel(
             LayerNormRowReduceInToOutWarp<T, U, DvarOp<T, U>, DmeanOp<T, U>>,
             Eigen::divup(N, kBlockSize / kWarpSize), kBlockSize, 0, d.stream(),
             dy, N, D, temp_1, temp_2, dl_dvar_ops, dl_dmu_ops));
 
-        DxOp<T, U> dx_ops{x, cache_mean, cache_ivar, gamma, temp_1, temp_2, D};
+        DxOp<T, U> dx_op{x, cache_mean, cache_ivar, gamma, temp_1, temp_2, D};
         TF_CHECK_OK(GpuLaunchKernel(LayerNormUpdate<T, DxOp<T, U>>,
                                     Eigen::divup(N * D, kBlockSize), kBlockSize,
-                                    0, d.stream(), dy, N, D, dx, dx_ops));
+                                    0, d.stream(), dy, N, D, dx, dx_op));
       } else {
         TF_CHECK_OK(GpuLaunchKernel(
             LayerNormGradWarpImpl<T, U, DvarOp<T, U>, DmeanOp<T, U>,
@@ -999,16 +996,17 @@ struct FusedLayerNormGrad<GPUDevice, T, U> {
                                 blocks, threads, 0, d.stream(), D, x, dy, gamma,
                                 N, D, temp_dl_dvars, temp_dl_dmus, dl_dvar_ops,
                                 dl_dmu_ops);
-
-      TF_CHECK_OK(GpuLaunchKernel(LayerNormRowReduceTempToOut<U>, N, threads, 0,
-                                  d.stream(), N, blocks_per_row, temp_dl_dvars,
-                                  temp_dl_dmus, temp_1, temp_2));
-
-      DxOp<T, U> dx_op{x, cache_mean, cache_ivar, gamma, temp_1, temp_2, D};
+      if (blocks_per_row > 1) {
+        TF_CHECK_OK(GpuLaunchKernel(LayerNormRowReduceTempToOut<U>, N, threads,
+                                    0, d.stream(), N, blocks_per_row,
+                                    temp_dl_dvars, temp_dl_dmus));
+      }
+      DxOp<T, U> dx_op{
+          x, cache_mean, cache_ivar, gamma, temp_dl_dvars, temp_dl_dmus, D};
 
       LaunchVectorizedKernel<T>(LayerNormBackwardUpdateCandidates<T, U>, blocks,
                                 threads, 0, d.stream(), D, x, dy, gamma, N, D,
-                                dx, dx_op);
+                                blocks_per_row, dx, dx_op);
     }
   }
 };

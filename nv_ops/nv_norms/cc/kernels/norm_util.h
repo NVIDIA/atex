@@ -60,9 +60,9 @@ void LaunchVectorizedKernel(void (*func[3])(Ts...), dim3 grid_dim,
                             dim3 block_dim, size_t shared_memory_size_bytes,
                             gpuStream_t stream, int D, Args&&... arguments) {
   // Cases each func will be used.
-  // func[0] : half and 4-elem aligned inputs
+  // func[2] : half and 4-elem aligned inputs
   // func[1] : float/half and 2-elem aligned inputs
-  // func[1] : fallback for everything else
+  // func[0] : fallback for everything else
   if (D % 4 == 0 && PackSizeTraits<T>::PackSize == 4) {
     TF_CHECK_OK(GpuLaunchKernel(func[2], grid_dim, block_dim,
                                 shared_memory_size_bytes, stream,
@@ -186,7 +186,7 @@ struct WFOp {
   WFOp(int64_t d, U e) : D(d), epsilon(e) {}
   WFOp(int64_t d, U e, int64_t c) : D(d), epsilon(e), C_(c) {}
   inline void SetChannelDim(const int64_t c) { C_ = c; }
-  inline __device__ int GetIndex(const int row, const int col) const {
+  inline __device__ int GetIndex(int row, int col) const {
     if (C_.has_value()) {
       // Channel last layout
       int64_t C = C_.value();
@@ -196,26 +196,25 @@ struct WFOp {
     }
   }
 
-  inline __device__ int GetIndex(const int row, const int col,
-                                 const int z) const {
+  inline __device__ int GetIndex(int row, int col, int z) const {
     // Channel last layout
     int64_t C = C_.value();
     return row * C * D + col * C + z;
   }
 
-  inline __device__ void Update(const T* x, const int row, const int col,
+  inline __device__ void Update(const T* x, int row, int col,
                                 WFGeneric<U>& wf_data) {
     // Channel first layout
     wf_data = WFGeneric<U>()(GetAs<T, U>(x, GetIndex(row, col)), wf_data);
   }
 
-  inline __device__ void Update(const T* x, const int row, const int col,
-                                const int z, WFGeneric<U>& wf_data) {
+  inline __device__ void Update(const T* x, int row, int col, int z,
+                                WFGeneric<U>& wf_data) {
     // Channel last layout
     wf_data = WFGeneric<U>()(GetAs<T, U>(x, GetIndex(row, col, z)), wf_data);
   }
 
-  inline __device__ void Update(const U val, WFGeneric<U>& wf_data) {
+  inline __device__ void Update(U val, WFGeneric<U>& wf_data) {
     wf_data = WFGeneric<U>()(val, wf_data);
   }
 
@@ -233,7 +232,7 @@ struct MeanOp {
   absl::optional<int64_t> C_;
   MeanOp(int64_t d) : D(d) {}
   inline void SetChannelDim(const int64_t c) { C_ = c; }
-  inline __device__ int GetIndex(const int row, const int col) const {
+  inline __device__ int GetIndex(int row, int col) const {
     if (C_.has_value()) {
       // Channel last layout
       int64_t C = C_.value();
@@ -243,18 +242,16 @@ struct MeanOp {
     }
   }
 
-  inline __device__ int GetIndex(const int row, const int col,
-                                 const int z) const {
+  inline __device__ int GetIndex(int row, int col, int z) const {
     // Channel last layout
     int64_t C = C_.value();
     return row * C * D + col * C + z;
   }
 
-  __device__ U Compute(const T* x, const int row, const int col) const {
+  __device__ U Compute(const T* x, int row, int col) const {
     return GetAs<T, U>(x, GetIndex(row, col));
   }
-  __device__ U Compute(const T* x, const int row, const int col,
-                       const int z) const {
+  __device__ U Compute(const T* x, int row, int col, int z) const {
     // Channel last layout
     return GetAs<T, U>(x, GetIndex(row, col, z));
   }
@@ -271,7 +268,7 @@ struct IvarOp {
       : cache_mean(m_ptr), epsilon(e), D(d) {}
   inline void SetChannelDim(const int64_t c) { C_ = c; }
 
-  inline __device__ int GetIndex(const int row, const int col) const {
+  inline __device__ int GetIndex(int row, int col) const {
     if (C_.has_value()) {
       // Channel last layout
       int64_t C = C_.value();
@@ -281,34 +278,31 @@ struct IvarOp {
     }
   }
 
-  inline __device__ int GetIndex(const int row, const int col,
-                                 const int z) const {
+  inline __device__ int GetIndex(int row, int col, int z) const {
     // Channel last layout
     int64_t C = C_.value();
     return row * C * D + col * C + z;
   }
 
-  __device__ U Compute(const T* x, const int row, const int col,
-                       const U mean) const {
+  __device__ U Compute(const T* x, int row, int col, U mean) const {
     U curr = GetAs<T, U>(x, GetIndex(row, col));
     return (curr - mean) * (curr - mean);
   }
-  __device__ U Compute(const T* x, const int row, const int col) const {
+  __device__ U Compute(const T* x, int row, int col) const {
     return Compute(x, row, col, cache_mean[row]);
   }
-  __device__ U Compute(const T* x, const int row, const int col, const int z,
-                       const U mean) const {
+  __device__ U Compute(const T* x, int row, int col, int z,
+                       U mean) const {
     U curr = GetAs<T, U>(x, GetIndex(row, col, z));
     return (curr - mean) * (curr - mean);
   }
-  __device__ U Compute(const T* x, const int row, const int col,
-                       const int z) const {
+  __device__ U Compute(const T* x, int row, int col, int z) const {
     // Channel last layout
     int64_t C = C_.value();
     U m = cache_mean[row * C + z];
     return Compute(x, row, col, z, m);
   }
-  __device__ U Finalize(const U sum) const {
+  __device__ U Finalize(U sum) const {
     return static_cast<U>(
         rsqrt(static_cast<float>(sum) / static_cast<float>(D) +
               static_cast<float>(epsilon)));
@@ -328,7 +322,7 @@ struct DvarOp {
       : gamma(g_ptr), x(x_ptr), cache_ivar(civar), cache_mean(cmean), D(d) {}
   inline void SetChannelDim(const int64_t c) { C_ = c; }
 
-  __device__ inline U Compute(const T* dy, const int row, const int col) const {
+  __device__ inline U Compute(const T* dy, int row, int col) const {
     U curr = GetAs<T, U>(dy, row * D + col);
     U g_val;
     if (C_.has_value()) {
@@ -341,18 +335,17 @@ struct DvarOp {
            (cache_ivar[row] * cache_ivar[row] * cache_ivar[row]);
   }
 
-  __device__ inline U Compute(const U x, const U dy_dot_gamma, const int row) {
+  __device__ inline U Compute(U x, U dy_dot_gamma, int row) {
     U ivar = cache_ivar[row];
     return dy_dot_gamma * (x - cache_mean[row]) * (-0.5) * ivar * ivar * ivar;
   }
 
-  __device__ inline U Compute(const T* dy, const int row, const int col,
-                              const int z) const {
+  __device__ inline U Compute(const T* dy, int row, int col, int z) const {
     int64_t C = C_.value();
     U curr = GetAs<T, U>(dy, row * D * C + col * C + z);
     return Compute(x[row * D * C + col * C + z], curr * gamma[z], row * C + z);
   }
-  __device__ U Finalize(const U sum) const { return sum; }
+  __device__ U Finalize(U sum) const { return sum; }
 };
 
 template <typename T, typename U>
@@ -368,7 +361,7 @@ struct DmeanOp {
       : gamma(g_ptr), x(x_ptr), cache_ivar(civar), cache_mean(cmean), D(d) {}
   inline void SetChannelDim(const int64_t c) { C_ = c; }
 
-  __device__ inline U Compute(const T* dy, const int row, const int col) const {
+  __device__ inline U Compute(const T* dy, int row, int col) const {
     U curr = GetAs<T, U>(dy, row * D + col);
     U g_val;
     if (C_.has_value()) {
@@ -380,19 +373,18 @@ struct DmeanOp {
     return -curr * g_val * cache_ivar[row];
   }
 
-  __device__ inline U Compute(const U dy_dot_gamma, const int row) const {
+  __device__ inline U Compute(U dy_dot_gamma, int row) const {
     return -dy_dot_gamma * cache_ivar[row];
   }
 
-  __device__ inline U Compute(const T* dy, const int row, const int col,
-                              const int z) const {
+  __device__ inline U Compute(const T* dy, int row, int col, int z) const {
     // Channel last layout
     int64_t C = C_.value();
     U curr = GetAs<T, U>(dy, row * D * C + col * C + z);
     return Compute(curr * gamma[z], row * C + z);
   }
 
-  __device__ inline U Finalize(const U sum) const { return sum; }
+  __device__ inline U Finalize(U sum) const { return sum; }
 };
 
 template <typename T, int thread_group_width = kWarpSize>
@@ -436,8 +428,7 @@ __inline__ __device__ T BlockAllReduce(const T& val, Op reduce_op,
 
 template <typename T, typename U, typename Op>
 __global__ __launch_bounds__(1024) void GeneralNormRowReduceInToOutWelford(
-    const T* __restrict__ in, const int N, const int D, U* out1, U* out2,
-    Op op) {
+    const T* __restrict__ in, int N, int D, U* out1, U* out2, Op op) {
   const int tid = threadIdx.x;
 
   for (int k = blockIdx.x; k < N; k += gridDim.x) {
@@ -465,12 +456,12 @@ struct YOp {
   const U* gamma;
   const U* beta;
   int64_t D;
-  __device__ inline U ComputePartial(const U x, const int row) const {
+  __device__ inline U ComputePartial(U x, int row) const {
     // partial = (x - mean) * ivar;
     return (x - cache_mean[row]) * cache_ivar[row];
   }
 
-  __device__ inline T Compute(const T* x, const int row, const int col) const {
+  __device__ inline T Compute(const T* x, int row, int col) const {
     U curr = GetAs<T, U>(x, row * D + col);
     U partial = ComputePartial(curr, row);
     return static_cast<T>(partial * gamma[col] + beta[col]);
@@ -486,18 +477,23 @@ struct DxOp {
   const U* dl_dvars;
   const U* dl_dmus;
   int64_t D;
-  __device__ inline U ComputePartial0(const U dy, const int row) const {
+  __device__ inline U ComputePartial0(U dy, int row) const {
     return dy * cache_ivar[row];
   }
-  __device__ inline U ComputePartial1(const U x, const int row) const {
+
+  __device__ inline U ComputePartial1(U x, int row,
+                                      int stride = 1) const {
+    // To cover the case that dl_dlvars and dl_dmus have strides
     U dvar_dx = 2 * (x - cache_mean[row]);
-    return (dvar_dx * dl_dvars[row] + dl_dmus[row]) / static_cast<U>(D);
+    return (dvar_dx * dl_dvars[row * stride] + dl_dmus[row * stride]) /
+           static_cast<U>(D);
   }
 
-  __device__ inline T Compute(const T* dy, const int row, const int col) const {
+  __device__ inline T Compute(const T* dy, int row, int col,
+                              int stride = 1) const {
     U curr = GetAs<T, U>(dy, row * D + col);
     U partial0 = ComputePartial0(curr, row);
-    U partial1 = ComputePartial1(x[row * D + col], row);
+    U partial1 = ComputePartial1(x[row * D + col], row, stride);
     return static_cast<T>(partial0 * gamma[col] + partial1);
   }
 };
@@ -513,8 +509,8 @@ struct DwStatFusedOp {
   const U* cache_mean;
   int64_t C;
   int64_t D;
-  __device__ inline void Compute(const T* dy, const int row, const int col,
-                                 U* ret1, U* ret2, U* ret3, U* ret4) const {
+  __device__ inline void Compute(const T* dy, int row, int col, U* ret1,
+                                 U* ret2, U* ret3, U* ret4) const {
     U curr = GetAs<T, U>(dy, row * D + col);
     U ivar = cache_ivar[row];
     U x_mean = x[row * D + col] - cache_mean[row];
@@ -525,9 +521,8 @@ struct DwStatFusedOp {
     *ret4 = curr;                          // dbeta
   }
 
-  __device__ inline void Compute(const T* dy, const int row, const int col,
-                                 const int z, U* ret1, U* ret2, U* ret3,
-                                 U* ret4) const {
+  __device__ inline void Compute(const T* dy, int row, int col, int z, U* ret1,
+                                 U* ret2, U* ret3, U* ret4) const {
     // Channel last layout
     U curr = GetAs<T, U>(dy, row * D * C + col * C + z);
     U ivar = cache_ivar[row * C + z];
@@ -539,7 +534,7 @@ struct DwStatFusedOp {
     *ret4 = curr;           // dbeta
   }
 
-  __device__ U Finalize(const U sum) const { return sum; }
+  __device__ U Finalize(U sum) const { return sum; }
 };
 
 template <typename T, typename U>
@@ -550,8 +545,8 @@ struct YOp {
   const U* beta;
   int64_t C;
   int64_t D;
-  __device__ inline T Compute(const T* x, const int idx,
-                              const bool is_channel_first) const {
+  __device__ inline T Compute(const T* x, int idx,
+                              bool is_channel_first) const {
     U curr = GetAs<T, U>(x, idx);
     int gb_idx, cache_idx;
     if (is_channel_first) {
@@ -577,8 +572,8 @@ struct DxOp {
   const U* dl_dmus;
   int64_t C;
   int64_t D;
-  __device__ inline T Compute(const T* dy, const int idx,
-                              const bool is_channel_first) const {
+  __device__ inline T Compute(const T* dy, int idx,
+                              bool is_channel_first) const {
     U curr = GetAs<T, U>(dy, idx);
     U dl_dx;
     if (is_channel_first) {
@@ -612,8 +607,8 @@ struct DxFusedOp {
   const U* dl_dmus;
   int64_t C;
   int64_t D;
-  __device__ inline T Compute(const T* dy, const int idx,
-                              const bool is_channel_first) const {
+  __device__ inline T Compute(const T* dy, int idx,
+                              bool is_channel_first) const {
     U curr = GetAs<T, U>(dy, idx);
     U dl_dx;
     if (is_channel_first) {
