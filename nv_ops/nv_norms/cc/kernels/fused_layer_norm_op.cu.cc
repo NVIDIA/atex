@@ -18,14 +18,12 @@ namespace functor {
 
 using namespace LnNorm;
 
-template <typename T, typename ComputeType, typename Op1, typename Op2,
-          int PackSize, int ColsPerThread>
-__global__ void LayerNormGradWarpImpl(const T* x, const T* dy,
-                                      const ComputeType* gamma,
-                                      const int64_t rows, const int64_t cols,
-                                      const ComputeType* cache_mean,
-                                      const ComputeType* cache_ivar, Op1 op1,
-                                      Op2 op2, T* dx, bool is_padding) {
+template <typename T, typename ComputeType, int ColsPerThread, int PackSize>
+__global__ void LayerNormGradWarpImpl(
+    const T* x, const T* dy, const ComputeType* gamma, const int64_t rows,
+    const int64_t cols, const ComputeType* cache_mean,
+    const ComputeType* cache_ivar, DvarOp<T, ComputeType> dvar_op,
+    DmeanOp<T, ComputeType> dmean_op, T* dx, bool is_padding) {
   constexpr int num_packs = ColsPerThread / PackSize;
 
   const int lane_id = threadIdx.x % kWarpSize;
@@ -39,8 +37,7 @@ __global__ void LayerNormGradWarpImpl(const T* x, const T* dy,
   constexpr int thread_group_width = kWarpSize;
   ComputeType buf_x[ColsPerThread];
   ComputeType buf_dy_dot_gamma[ColsPerThread];
-  ComputeType one_over_cols =
-      static_cast<ComputeType>(1.0) / static_cast<ComputeType>(cols);
+  ComputeType one_over_cols = static_cast<ComputeType>(1.0 / cols);
   for (int k = warp_id; k < rows; k += gridDim.x * num_warps) {
     ComputeType row_ivar = cache_ivar[k];
     ComputeType row_mean = cache_mean[k];
@@ -62,8 +59,8 @@ __global__ void LayerNormGradWarpImpl(const T* x, const T* dy,
         for (int i = 0; i < PackSize; ++i) {
           ComputeType x = buf_x[pack_offset + i];
           ComputeType dy_dot_gamma = buf_dy_dot_gamma[pack_offset + i];
-          partial_sum_1 += op1.Compute(x, dy_dot_gamma, k);
-          partial_sum_2 += op2.Compute(dy_dot_gamma, k);
+          partial_sum_1 += dvar_op.Compute(x, dy_dot_gamma, k);
+          partial_sum_2 += dmean_op.Compute(dy_dot_gamma, k);
         }
       } else {
         for (int i = 0; i < PackSize; ++i) {
@@ -77,12 +74,12 @@ __global__ void LayerNormGradWarpImpl(const T* x, const T* dy,
         WarpReduce(temp_storage[local_warp_id]).Sum(partial_sum_1);
     sum = gpuprim::ShuffleIndex<thread_group_width, ComputeType>(sum, 0,
                                                                  0xffffffff);
-    ComputeType dldvar = op1.Finalize(sum);
+    ComputeType dldvar = dvar_op.Finalize(sum);
     sum = 0;
     sum = WarpReduce(temp_storage[local_warp_id]).Sum(partial_sum_2);
     sum = gpuprim::ShuffleIndex<thread_group_width, ComputeType>(sum, 0,
                                                                  0xffffffff);
-    ComputeType dldmu = op2.Finalize(sum);
+    ComputeType dldmu = dmean_op.Finalize(sum);
 
     for (int i = 0; i < ColsPerThread; ++i) {
       buf_x[i] = (2.f * (buf_x[i] - row_mean) * dldvar + dldmu) * one_over_cols;
@@ -99,6 +96,15 @@ __global__ void LayerNormGradWarpImpl(const T* x, const T* dy,
     }
   }
 }
+
+template <typename T, typename U, int ColsPerThread>
+void (*LayerNormGradWarpImplCandidates[3])(
+    const T* x, const T* dy, const U* gamma, const int64_t rows,
+    const int64_t cols, const U* cache_mean, const U* cache_ivar,
+    DvarOp<T, U> dvar_op, DmeanOp<T, U> dmean_op, T* dx,
+    bool is_padding){LayerNormGradWarpImpl<T, U, ColsPerThread, 1>,
+                     LayerNormGradWarpImpl<T, U, ColsPerThread, 2>,
+                     LayerNormGradWarpImpl<T, U, ColsPerThread, 4>};
 
 template <typename T, typename U, typename Op1, typename Op2>
 __global__ __launch_bounds__(1024) void LayerNormRowReduceInToOutWarp(
@@ -367,17 +373,14 @@ Status TryDispatchLayerNormGradBlockSMemImpl(
   return Status::OK();
 }
 
-template <typename T, typename ComputeType, typename Op>
-__global__ void LayerNormWarpImplWelford(const T* x, const ComputeType* gamma,
-                                         const ComputeType* beta, int rows,
-                                         int cols, T* y,
-                                         ComputeType* __restrict__ out1,
-                                         ComputeType* __restrict__ out2, Op op,
-                                         bool is_padding) {
-  // Each thread works on kMaxWorkPerThread number of cols.
-  constexpr int pack_size = PackSizeTraits<T>::PackSize;
-  constexpr int cols_per_thread = kMaxWorkPerThread;
-  constexpr int num_packs = cols_per_thread / pack_size;
+template <typename T, typename ComputeType, int PackSize>
+__global__ void LayerNormWarpImplWelford(
+    const T* x, const ComputeType* gamma, const ComputeType* beta, int rows,
+    int cols, T* y, ComputeType* __restrict__ out1,
+    ComputeType* __restrict__ out2, WFOp<T, ComputeType> op, bool is_padding) {
+  // Each thread works on kWorkPerThreadInWarp number of cols.
+  constexpr int cols_per_thread = kWorkPerThreadInWarp;
+  constexpr int num_packs = cols_per_thread / PackSize;
 
   const int lane_id = threadIdx.x % kWarpSize;
 
@@ -392,18 +395,18 @@ __global__ void LayerNormWarpImplWelford(const T* x, const ComputeType* gamma,
     WFGeneric<ComputeType> wf_thread;
 
     for (int pack_id = 0; pack_id < num_packs; ++pack_id) {
-      const int col = (pack_id * thread_group_width + lane_id) * pack_size;
-      const int pack_offset = pack_id * pack_size;
+      const int col = (pack_id * thread_group_width + lane_id) * PackSize;
+      const int pack_offset = pack_id * PackSize;
       const int data_offset = k * cols + col;
       if (!is_padding || col < cols) {
-        CopyWithCast<T, ComputeType, pack_size>(x, data_offset,
-                                                row_buf + pack_offset);
+        CopyWithCast<T, ComputeType, PackSize>(x, data_offset,
+                                               row_buf + pack_offset);
 
-        for (int i = 0; i < pack_size; ++i) {
+        for (int i = 0; i < PackSize; ++i) {
           op.Update(row_buf[pack_offset + i], wf_thread);
         }
       } else {
-        for (int i = 0; i < pack_size; ++i) {
+        for (int i = 0; i < PackSize; ++i) {
           row_buf[pack_offset + i] = 0;
         }
       }
@@ -422,14 +425,23 @@ __global__ void LayerNormWarpImplWelford(const T* x, const ComputeType* gamma,
     }
 
     for (int i = 0; i < num_packs; ++i) {
-      const int col = (i * thread_group_width + lane_id) * pack_size;
+      const int col = (i * thread_group_width + lane_id) * PackSize;
       if (!is_padding || col < cols) {
-        CopyWithAffineAndCast<ComputeType, T, pack_size>(
-            row_buf + i * pack_size, gamma, col, beta, col, y, k * cols + col);
+        CopyWithAffineAndCast<ComputeType, T, PackSize>(
+            row_buf + i * PackSize, gamma, col, beta, col, y, k * cols + col);
       }
     }
   }
 }
+
+template <typename T, typename U>
+void (*LayerNormWarpImplWelfordCandidates[3])(const T* x, const U* gamma,
+                                              const U* beta, int rows, int cols,
+                                              T* y, U* __restrict__ out1,
+                                              U* __restrict__ out2,
+                                              WFOp<T, U> op, bool is_padding){
+    LayerNormWarpImplWelford<T, U, 1>, LayerNormWarpImplWelford<T, U, 2>,
+    LayerNormWarpImplWelford<T, U, 4>};
 
 template <typename T, typename U, typename Op>
 __global__ __launch_bounds__(1024) void LayerNormRowReduceInToOutWarpWelford(
@@ -821,12 +833,12 @@ struct FusedLayerNorm<GPUDevice, T, U> {
             Eigen::divup(N, kBlockSize / kWarpSize), kBlockSize, 0, d.stream(),
             x, gamma, beta, N, D, cache_mean, cache_ivar, y, wf_ops));
       } else {
-        const bool is_padding = (D != kMaxWorkPerThread * kWarpSize);
-        TF_CHECK_OK(
-            GpuLaunchKernel(LayerNormWarpImplWelford<T, U, decltype(wf_ops)>,
-                            Eigen::divup(N, kBlockSize / kWarpSize), kBlockSize,
-                            0, d.stream(), x, gamma, beta, N, D, y, cache_mean,
-                            cache_ivar, wf_ops, is_padding));
+        const bool is_padding = (D != kWorkPerThreadInWarp * kWarpSize);
+        LaunchVectorizedKernel<T>(LayerNormWarpImplWelfordCandidates<T, U>,
+                                  Eigen::divup(N, kBlockSize / kWarpSize),
+                                  kBlockSize, 0, d.stream(), D, x, gamma, beta,
+                                  N, D, y, cache_mean, cache_ivar, wf_ops,
+                                  is_padding);
       }
     } else {
       Status status = TryDispatchLayerNormBlockSMemImpl<T, U, WFOp<T, U>>(
@@ -959,13 +971,11 @@ struct FusedLayerNormGrad<GPUDevice, T, U> {
                                     Eigen::divup(N * D, kBlockSize), kBlockSize,
                                     0, d.stream(), dy, N, D, dx, dx_op));
       } else {
-        TF_CHECK_OK(GpuLaunchKernel(
-            LayerNormGradWarpImpl<T, U, DvarOp<T, U>, DmeanOp<T, U>,
-                                  PackSizeTraits<T>::PackSize,
-                                  kMaxWorkPerThread>,
+        LaunchVectorizedKernel<T>(
+            LayerNormGradWarpImplCandidates<T, U, kWorkPerThreadInWarp>,
             Eigen::divup(N, kBlockSize / kWarpSize), kBlockSize, 0, d.stream(),
-            x, dy, gamma, N, D, cache_mean, cache_ivar, dl_dvar_ops, dl_dmu_ops,
-            dx, D != kMaxWorkPerThread * kWarpSize));
+            D, x, dy, gamma, N, D, cache_mean, cache_ivar, dl_dvar_ops,
+            dl_dmu_ops, dx, D != kWorkPerThreadInWarp * kWarpSize);
       }
     } else {
       Status status = TryDispatchLayerNormGradBlockSMemImpl<T, U, DvarOp<T, U>,
