@@ -6,6 +6,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import itertools
 import numpy as np
 import tensorflow as tf
 import tensorflow_addons as tfa
@@ -72,10 +73,10 @@ def get_input_shape(N, C, D, x_rank, axis):
     x_shape += [D] * (x_rank - 2) + [C]
   return x_shape
 
-class FusedInstanceNormOpTest(test.TestCase):
-  def _runForward(self, x_shape, axis, epsilon=0.001):
+class NvNormsInstanceNormOpTest(test.TestCase):
+  def _runForward(self, x_shape, axis, data_dtype=tf.float32, epsilon=0.001):
     assert axis in (1, -1)
-    x = tf.random.normal(shape=x_shape, stddev=10.0, dtype=tf.float32)
+    x = tf.random.normal(shape=x_shape, stddev=10.0, dtype=data_dtype)
     gamma = tf.constant(
         np.random.normal(size=x_shape[axis]),
         dtype=tf.float32)
@@ -92,8 +93,8 @@ class FusedInstanceNormOpTest(test.TestCase):
     else:
       reduce_axis = tuple([i for i in range(1, x.ndim-1)])
 
-    mean_ref, var_ref = tf.nn.moments(x, axes=reduce_axis)
-    inv_var_ref = tf.constant(1. / (var_ref + epsilon),  dtype=tf.float32)
+    mean_ref, var_ref = tf.cast(tf.nn.moments(x, axes=reduce_axis), tf.float32)
+    inv_var_ref = tf.constant(1. / (var_ref + epsilon))
     
     # For ops fused_instance_norm_op, fused_instance_norm_grad_op, they take
     # argument data_format in ("NC...", "N...C", "NCHW", "NHWC", "NCDHW", 
@@ -105,14 +106,14 @@ class FusedInstanceNormOpTest(test.TestCase):
     self.assertAllClose(mean, mean_ref, atol=0.01)
     self.assertAllClose(inv_std**2, inv_var_ref, atol=0.05)
 
-  def _runBackward(self, x_shape, axis, epsilon=0.0):
+  def _runBackward(self, x_shape, axis, data_dtype=tf.float32, epsilon=0.001):
     assert axis in (1, -1)
     x_np = np.random.normal(0.0, 10.0, size=x_shape).astype(np.float32)
     dy_np = np.random.normal(size=x_shape).astype(np.float32)
     gamma_np = np.random.normal(size=x_shape[axis]).astype(np.float32)
 
-    x = tf.constant(x_np, dtype=tf.float32)
-    dy = tf.constant(dy_np, dtype=tf.float32)
+    x = tf.constant(x_np, dtype=data_dtype)
+    dy = tf.constant(dy_np, dtype=data_dtype)
     gamma = tf.constant(gamma_np, dtype=tf.float32)
 
     if axis == 1:
@@ -123,6 +124,7 @@ class FusedInstanceNormOpTest(test.TestCase):
     mean, var = tf.nn.moments(x, axes=reduce_axis)
     
     inv_std = tf.constant(1. / np.sqrt(var + epsilon), dtype=tf.float32)
+    mean = tf.cast(mean, tf.float32)
     cache = {}
     cache["istd"] = inv_std
     cache["mean"] = mean
@@ -142,13 +144,39 @@ class FusedInstanceNormOpTest(test.TestCase):
   def testFusedInstanceNormOp(self):
     N, C = 2, 32
     with self.cached_session(use_gpu=True) as sess:
-      for x_rank in (4, 5):
-        for D_exp in (1, 2, 3, 4, 5, 6,):
-          for axis in (1, -1):
-            x_shape = get_input_shape(N, C, 2**D_exp, x_rank, axis)
-            self._runForward(x_shape, axis)
-            self._runBackward(x_shape, axis)
+      x_ranks = [4, 5]
+      D_exps = [3, 4, 5, 6]
+      axes = [1, -1]
+      dtypes = [tf.float16, tf.float32]
+      for axis, x_rank, D_exp, dtype in itertools.product(axes, x_ranks, D_exps, dtypes):
+        x_shape = get_input_shape(N, C, 2**D_exp, x_rank, axis)
+        self._runForward(x_shape, axis, dtype)
+        # only test float32 for backward given the baseline is in float32
+        self._runBackward(x_shape, axis) 
   
+  @test_util.run_gpu_only
+  def testFusedInstanceNormOpWithNonTypicalInputShapes(self):
+    with self.cached_session(use_gpu=True):
+      N, C = 1, 32
+      axes = [1, -1]
+      features = [
+          [1, 11],
+          [3, 4],
+          [1, 31],
+          [1, 4001],
+          [61, 82],
+          [113, 145],
+          [198, 331],
+          [179, 2929]]
+      for D, axis in itertools.product(features, axes):
+        x_shape = [N, C] + D
+        if axis == 1:
+          x_shape = [N, C] + D
+        else:
+          x_shape = [N] + D + [C]
+        self._runForward(x_shape, axis)
+        self._runBackward(x_shape, axis)
+
   #4 ,1, 1 forward on volta
   @test_util.run_gpu_only
   def testFusedInstanceNormEmptyInput(self):
@@ -256,4 +284,3 @@ class FusedInstanceNormLayerTest(test.TestCase):
 
 if __name__ == '__main__':
   test.main()
-

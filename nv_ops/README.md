@@ -73,26 +73,28 @@ Here is a simple benchmark script to compare the performance of
 ```bash
 # python -u benchmark_instance_norm.py
 # On V100
-Input: (2, 128, 128, 128, 32) Time(ms): TF: 36.60 NV: 10.01
-Input: (2, 128, 128, 128, 64) Time(ms): TF: 71.79 NV: 17.26
-Input: (4, 128, 128, 128, 32) Time(ms): TF: 71.77 NV: 17.23
-Input: (4, 64, 64, 64, 64) Time(ms): TF: 18.86 NV: 6.52
-Input: (8, 64, 64, 64, 32) Time(ms): TF: 18.84 NV: 6.50
-Input: (8, 64, 64, 64, 64) Time(ms): TF: 36.54 NV: 10.01
-Input: (8, 64, 64, 64, 128) Time(ms): TF: 71.76 NV: 17.16
-Input: (4, 32, 32, 32, 256) Time(ms): TF: 10.23 NV: 4.25
-Input: (8, 32, 32, 32, 256) Time(ms): TF: 18.78 NV: 6.14
-End of NHWC
-Input: (2, 32, 128, 128, 128) Time(ms): TF: 34.85 NV: 10.19
-Input: (2, 64, 128, 128, 128) Time(ms): TF: 68.45 NV: 20.06
-Input: (4, 32, 128, 128, 128) Time(ms): TF: 68.45 NV: 16.79
-Input: (4, 64, 64, 64, 64) Time(ms): TF: 17.96 NV: 5.67
-Input: (8, 32, 64, 64, 64) Time(ms): TF: 17.94 NV: 5.66
-Input: (8, 64, 64, 64, 64) Time(ms): TF: 34.78 NV: 9.14
-Input: (8, 128, 64, 64, 64) Time(ms): TF: 68.44 NV: 16.08
-Input: (4, 256, 32, 32, 32) Time(ms): TF: 10.12 NV: 2.11
-Input: (8, 256, 32, 32, 32) Time(ms): TF: 17.84 NV: 4.06
-End of NCHW
+Input: (2, 6, 6, 6, 32) Time(ms): TF: 3.75 NV: 0.56
+Input: (2, 128, 128, 128, 32) Time(ms): TF: 36.45 NV: 9.35
+Input: (2, 128, 128, 128, 64) Time(ms): TF: 71.64 NV: 16.07
+Input: (4, 128, 128, 128, 32) Time(ms): TF: 71.39 NV: 16.03
+Input: (4, 64, 64, 64, 64) Time(ms): TF: 18.77 NV: 6.11
+Input: (8, 64, 64, 64, 32) Time(ms): TF: 18.78 NV: 6.08
+Input: (8, 64, 64, 64, 64) Time(ms): TF: 36.42 NV: 9.39
+Input: (8, 64, 64, 64, 128) Time(ms): TF: 71.43 NV: 16.08
+Input: (4, 32, 32, 32, 256) Time(ms): TF: 10.20 NV: 4.04
+Input: (8, 32, 32, 32, 256) Time(ms): TF: 18.51 NV: 5.71
+End of channel last layout.
+Input: (2, 32, 6, 6, 6) Time(ms): TF: 3.67 NV: 0.55
+Input: (2, 32, 128, 128, 128) Time(ms): TF: 34.55 NV: 6.83
+Input: (2, 64, 128, 128, 128) Time(ms): TF: 68.09 NV: 13.63
+Input: (4, 32, 128, 128, 128) Time(ms): TF: 68.09 NV: 12.65
+Input: (4, 64, 64, 64, 64) Time(ms): TF: 17.69 NV: 3.73
+Input: (8, 32, 64, 64, 64) Time(ms): TF: 17.67 NV: 3.73
+Input: (8, 64, 64, 64, 64) Time(ms): TF: 34.50 NV: 6.75
+Input: (8, 128, 64, 64, 64) Time(ms): TF: 68.29 NV: 13.05
+Input: (4, 256, 32, 32, 32) Time(ms): TF: 10.04 NV: 1.79
+Input: (8, 256, 32, 32, 32) Time(ms): TF: 17.89 NV: 3.44
+End of channel first layout.
 ```
 
 ### Use it in Real-World Model

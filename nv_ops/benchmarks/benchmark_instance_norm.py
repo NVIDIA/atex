@@ -31,11 +31,13 @@ def benchmark_fn(input_shape, use_nv_ops, axis=-1):
 
   for i in range(warmup):
     dx, dgamma, dbeta = train_step(data)
+
   _ = tf.reduce_sum(dx).numpy()
 
   start = time.time()
   for i in range(repeat):
     dx, dgamma, dbeta = train_step(data)
+
   _ = tf.reduce_sum(dx).numpy()
 
   result = time.time() - start
@@ -44,6 +46,7 @@ def benchmark_fn(input_shape, use_nv_ops, axis=-1):
 
 # denote N C D/H/W dim
 input_shapes = [
+    (2, 32, 6),
     (2, 32, 128),
     (2, 64, 128),
     (4, 32, 128),
@@ -54,6 +57,7 @@ input_shapes = [
     (4, 256, 32),
     (8, 256, 32),
 ]
+
 def get_shape(x, channel_last):
   if channel_last:
     return (x[0], x[2], x[2], x[2], x[1])
@@ -75,4 +79,3 @@ for input_shape in input_shapes:
   print("Input: {} Time(ms): TF: {:0.2f} NV: {:0.2f}".format(
       expanded_shape, time_tf, time_nv))
 print("End of channel first layout.")
-
