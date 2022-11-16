@@ -82,7 +82,7 @@ __global__ void LayerNormGradWarpImpl(
     ComputeType dldmu = dmean_op.Finalize(sum);
 
     for (int i = 0; i < ColsPerThread; ++i) {
-      buf_x[i] = (2.f * (buf_x[i] - row_mean) * dldvar + dldmu) * one_over_cols;
+      buf_x[i] = (2 * (buf_x[i] - row_mean) * dldvar + dldmu) * one_over_cols;
       buf_dy_dot_gamma[i] = buf_dy_dot_gamma[i] * row_ivar;
       buf_x[i] += buf_dy_dot_gamma[i];
     }
@@ -243,7 +243,7 @@ __global__ void LayerNormGradBlockSMemImpl(const T* x, const T* dy,
     for (size_t pack_id = tid; pack_id < num_packs; pack_id += BlockSize) {
       for (int i = 0; i < PackSize; ++i) {
         const size_t buf_offset = i * num_packs + pack_id;
-        x_pack[i] = (2.f * (buf_x[buf_offset] - row_mean) * dldvar + dldmu) *
+        x_pack[i] = (2 * (buf_x[buf_offset] - row_mean) * dldvar + dldmu) *
                         one_over_cols +
                     buf_dy_dot_gamma[buf_offset] * row_inv_var;
       }

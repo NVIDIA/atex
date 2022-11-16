@@ -1261,7 +1261,7 @@ void InstanceNormReductionsChnlFirstWelford(OpKernelContext* context, size_t N,
                               gamma, beta, y, y_op);
   }
 }
-///////////////////////////////////////////////TODO
+
 template <typename T, typename U, typename Op1, typename Op2>
 void InstanceNormReductionsChnlLast(OpKernelContext* context, size_t N,
                                     size_t C, size_t D, const T* x, U* temp_1,
