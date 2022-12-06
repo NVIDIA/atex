@@ -42,6 +42,7 @@ __global__ __launch_bounds__(1024) void InstanceNormToTempWelford(
       }
       WFGeneric<U> wf_block = BlockAllReduce<WFGeneric<U>, WFGeneric<U>>(
           wf_partial, WFGeneric<U>());
+      __syncthreads();
       if (threadIdx.x == 0) {
         temp_mean[row_idx * gridDim.x + blockIdx.x] = wf_block.mean;
         temp_m2[row_idx * gridDim.x + blockIdx.x] = wf_block.m2;
@@ -641,7 +642,7 @@ __launch_bounds__(1024) void InstanceNormRowReduceInToTempFusedVectorized(
     __syncthreads();
     sum4 =
         BlockAllReduce<ComputeType, gpuprim::Sum>(partial_sum4, gpuprim::Sum());
-
+    __syncthreads();
     if (threadIdx.x == 0) {
       int idx = row_idx * gridDim.x + blockIdx.x;
       temp_1[idx] = sum1;  // dmu
