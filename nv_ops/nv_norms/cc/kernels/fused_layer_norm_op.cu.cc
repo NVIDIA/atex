@@ -434,8 +434,9 @@ __global__ void LayerNormWarpImplWelford(
 
 template <typename T, typename U>
 void (*LayerNormWarpImplWelfordCandidates[3])(const T* x, const U* gamma,
-                                              const U* beta, int rows, int cols,
-                                              T* y, U* __restrict__ out1,
+                                              const U* beta, size_t rows,
+                                              size_t cols, T* __restrict__ y,
+                                              U* __restrict__ out1,
                                               U* __restrict__ out2,
                                               WFOp<T, U> op, bool is_padding){
     LayerNormWarpImplWelford<T, U, 1>, LayerNormWarpImplWelford<T, U, 2>,
@@ -835,7 +836,7 @@ struct FusedLayerNorm<GPUDevice, T, U> {
       } else {
         const bool is_padding = (D != kWorkPerThreadInWarp * kWarpSize);
         LaunchVectorizedKernel<T>(LayerNormWarpImplWelfordCandidates<T, U>,
-                                  Eigen::divup(N, kBlockSize / kWarpSize),
+                                  DivUp(N, kBlockSize / kWarpSize),
                                   kBlockSize, 0, d.stream(), D, x, gamma, beta,
                                   N, D, y, cache_mean, cache_ivar, wf_ops,
                                   is_padding);
@@ -848,18 +849,18 @@ struct FusedLayerNorm<GPUDevice, T, U> {
         return;
       }
       const int blocks_per_row = DivUp(D, kBlockSize * min_workload_per_thread);
-      const intmax_t scratch_size = N * blocks_per_row;
+      TensorShape scratch_shape({static_cast<int>(N * blocks_per_row)});
 
       Tensor scratch1, scratch2, scratch3;
       OP_REQUIRES_OK(context,
                      context->allocate_temp(DataTypeToEnum<U>::value,
-                                            {scratch_size}, &scratch1));
+                                            scratch_shape, &scratch1));
       OP_REQUIRES_OK(context,
                      context->allocate_temp(DataTypeToEnum<U>::value,
-                                            {scratch_size}, &scratch2));
+                                            scratch_shape, &scratch2));
       OP_REQUIRES_OK(context,
                      context->allocate_temp(DataTypeToEnum<U>::value,
-                                            {scratch_size}, &scratch3));
+                                            scratch_shape, &scratch3));
       U* temp_mean = scratch1.flat<U>().data();
       U* temp_m2 = scratch2.flat<U>().data();
       U* temp_count = scratch3.flat<U>().data();
@@ -924,15 +925,15 @@ struct FusedLayerNormGrad<GPUDevice, T, U> {
           d.stream(), dy, x, cache_mean, cache_ivar, N, D, dgamma, dbeta));
     } else {
       const int reduced_rows = DivUp(N, min_rows_per_block);
-      const intmax_t scratch_size = reduced_rows * D;
+      TensorShape scratch_shape({static_cast<int>(reduced_rows * D)});
 
       Tensor scratch1, scratch2;
       OP_REQUIRES_OK(context,
                      context->allocate_temp(DataTypeToEnum<U>::value,
-                                            {scratch_size}, &scratch1));
+                                            scratch_shape, &scratch1));
       OP_REQUIRES_OK(context,
                      context->allocate_temp(DataTypeToEnum<U>::value,
-                                            {scratch_size}, &scratch2));
+                                            scratch_shape, &scratch2));
       U* temp_dgamma = scratch1.flat<U>().data();
       U* temp_dbeta = scratch2.flat<U>().data();
 
@@ -957,11 +958,11 @@ struct FusedLayerNormGrad<GPUDevice, T, U> {
         Tensor scratch_dl_dvars, scratch_dl_dmus;
         OP_REQUIRES_OK(context,
                        context->allocate_temp(DataTypeToEnum<U>::value,
-                                              {static_cast<intmax_t>(N)},
+                                              {static_cast<int>(N)},
                                               &scratch_dl_dvars));
         OP_REQUIRES_OK(context,
                        context->allocate_temp(DataTypeToEnum<U>::value,
-                                              {static_cast<intmax_t>(N)},
+                                              {static_cast<int>(N)},
                                               &scratch_dl_dmus));
         U* temp_1 = scratch_dl_dvars.flat<U>().data();
         U* temp_2 = scratch_dl_dmus.flat<U>().data();
@@ -978,7 +979,7 @@ struct FusedLayerNormGrad<GPUDevice, T, U> {
       } else {
         LaunchVectorizedKernel<T>(
             LayerNormGradWarpImplCandidates<T, U, kWorkPerThreadInWarp>,
-            Eigen::divup(N, kBlockSize / kWarpSize), kBlockSize, 0, d.stream(),
+            DivUp(N, kBlockSize / kWarpSize), kBlockSize, 0, d.stream(),
             D, x, dy, gamma, N, D, cache_mean, cache_ivar, dl_dvar_ops,
             dl_dmu_ops, dx, D != kWorkPerThreadInWarp * kWarpSize);
       }
@@ -996,11 +997,11 @@ struct FusedLayerNormGrad<GPUDevice, T, U> {
       Tensor scratch_temp_dl_dvars, scratch_temp_dl_dmus;
       OP_REQUIRES_OK(context, context->allocate_temp(
                                   DataTypeToEnum<U>::value,
-                                  {static_cast<intmax_t>(N * blocks_per_row)},
+                                  {static_cast<int>(N * blocks_per_row)},
                                   &scratch_temp_dl_dvars));
       OP_REQUIRES_OK(context, context->allocate_temp(
                                   DataTypeToEnum<U>::value,
-                                  {static_cast<intmax_t>(N * blocks_per_row)},
+                                  {static_cast<int>(N * blocks_per_row)},
                                   &scratch_temp_dl_dmus));
       U* temp_dl_dvars = scratch_temp_dl_dvars.flat<U>().data();
       U* temp_dl_dmus = scratch_temp_dl_dmus.flat<U>().data();

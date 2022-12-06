@@ -38,7 +38,7 @@ it as:
 
 # pip install artifacts/*.whl
 <...>
-Successfully installed tensorflow-nv-norms-0.0.1
+Successfully installed tensorflow-nv-norms-0.0.2
 ```
 
 ### Benchmark

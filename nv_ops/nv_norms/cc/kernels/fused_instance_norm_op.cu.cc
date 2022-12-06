@@ -824,7 +824,7 @@ void InstanceNormReductionsChnlFirstFused(OpKernelContext* context, size_t N,
                                           U* temp_3, U* temp_4, Op op) {
   const bool is_channel_first = true;
   const GPUDevice& d = context->eigen_device<GPUDevice>();
-  intmax_t NxC = N * C;
+  const int NxC = static_cast<int>(N * C);
   const int min_num_blocks = kWarpSize;
 
   Tensor scratch_dgamma, scratch_dbeta;
@@ -1196,7 +1196,7 @@ void InstanceNormReductionsChnlFirstWelford(OpKernelContext* context, size_t N,
                                             U* temp_1, U* temp_2, Op op) {
   const bool is_channel_first = true;
   const GPUDevice& d = context->eigen_device<GPUDevice>();
-  const intmax_t NxC = N * C;
+  const int NxC = static_cast<int>(N * C);
   const int min_num_blocks = kWarpSize;
 
   Status status =
@@ -1318,15 +1318,15 @@ void InstanceNormReductionsChnlLastWelford(OpKernelContext* context, size_t N,
   size_t ppr = DivUp(D, int(block_dim.y * kMinWorkPerThreadCLast));
   dim3 grid_dim(DivUp(C, kWarpSize), ppr, N);
 
-  intmax_t scratch_size = N * C * block_dim.y * ppr;
+  TensorShape scratch_shape({static_cast<int>(N * C * block_dim.y * ppr)});
 
   Tensor scratch1, scratch2, scratch3;
   OP_REQUIRES_OK(context, context->allocate_temp(DataTypeToEnum<U>::value,
-                                                 {scratch_size}, &scratch1));
+                                                 scratch_shape, &scratch1));
   OP_REQUIRES_OK(context, context->allocate_temp(DataTypeToEnum<U>::value,
-                                                 {scratch_size}, &scratch2));
+                                                 scratch_shape, &scratch2));
   OP_REQUIRES_OK(context, context->allocate_temp(DataTypeToEnum<U>::value,
-                                                 {scratch_size}, &scratch3));
+                                                 scratch_shape, &scratch3));
   U* temp_buffer_1 = scratch1.flat<U>().data();
   U* temp_buffer_2 = scratch2.flat<U>().data();
   U* temp_buffer_3 = scratch3.flat<U>().data();
@@ -1363,16 +1363,16 @@ void InstanceNormReductionsChnlLastFused(OpKernelContext* context, size_t N,
   const size_t ppr = DivUp(D, int(threads.y * kMinWorkPerThreadCLast));
 
   dim3 blocks(DivUp(C, kWarpSize), ppr, N);
-  const intmax_t scratch_size = N * C * threads.y * ppr;
+  TensorShape scratch_shape({static_cast<int>(N * C * threads.y * ppr)});
   Tensor scratch1, scratch2, scratch3, scratch4;
   OP_REQUIRES_OK(context, context->allocate_temp(DataTypeToEnum<U>::value,
-                                                 {scratch_size}, &scratch1));
+                                                 scratch_shape, &scratch1));
   OP_REQUIRES_OK(context, context->allocate_temp(DataTypeToEnum<U>::value,
-                                                 {scratch_size}, &scratch2));
+                                                 scratch_shape, &scratch2));
   OP_REQUIRES_OK(context, context->allocate_temp(DataTypeToEnum<U>::value,
-                                                 {scratch_size}, &scratch3));
+                                                 scratch_shape, &scratch3));
   OP_REQUIRES_OK(context, context->allocate_temp(DataTypeToEnum<U>::value,
-                                                 {scratch_size}, &scratch4));
+                                                 scratch_shape, &scratch4));
   U* temp_buffer_1 = scratch1.flat<U>().data();
   U* temp_buffer_2 = scratch2.flat<U>().data();
   U* temp_buffer_3 = scratch3.flat<U>().data();
@@ -1406,7 +1406,7 @@ void InstanceNormGrad(OpKernelContext* context, const T* x, const T* dy,
 
   DwStatFusedOp<T, U> dldwstat_ops{gamma, x, cache_ivar, cache_mean, C, D};
 
-  const intmax_t NxC = N * C;
+  const int NxC = static_cast<int>(N * C);
   if (use_single_warp) {
     Tensor scratch3, scratch4;
     OP_REQUIRES_OK(context, context->allocate_temp(DataTypeToEnum<U>::value,
@@ -1459,7 +1459,7 @@ struct FusedInstanceNorm<GPUDevice, T, U> {
     const size_t C = x_input.dim_size(channel_dim);
     const size_t D = x_input.dim_size(feature_dim);
 
-    const intmax_t NxC = N * C;
+    const int NxC = static_cast<int>(N * C);
 
     const T* x = x_input.flat<T>().data();
     const U* gamma = scale_input.flat<U>().data();
@@ -1524,7 +1524,6 @@ struct FusedInstanceNormGrad<GPUDevice, T, U> {
     const size_t N = x_input.dim_size(0);
     const size_t C = x_input.dim_size(channel_dim);
     const size_t D = x_input.dim_size(feature_dim);
-    const intmax_t NC = N * C;
 
     const T* dy = y_backprop_input.flat<T>().data();
     const T* x = x_input.flat<T>().data();
@@ -1535,11 +1534,12 @@ struct FusedInstanceNormGrad<GPUDevice, T, U> {
     U* dgamma = scale_backprop_output->flat<U>().data();
     U* dbeta = offset_backprop_output->flat<U>().data();
 
+    TensorShape scratch_shape({static_cast<int>(N * C)});
     Tensor scratch1, scratch2;
     OP_REQUIRES_OK(context, context->allocate_temp(DataTypeToEnum<U>::value,
-                                                   {NC}, &scratch1));
+                                                   scratch_shape, &scratch1));
     OP_REQUIRES_OK(context, context->allocate_temp(DataTypeToEnum<U>::value,
-                                                   {NC}, &scratch2));
+                                                   scratch_shape, &scratch2));
     U* temp_1 = scratch1.flat<U>().data();
     U* temp_2 = scratch2.flat<U>().data();
 

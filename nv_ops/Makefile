@@ -12,8 +12,8 @@ IN_SRCS = nv_norms/cc/kernels/fused_instance_norm_op.cc ${COMMON_SRCS}
 TF_CFLAGS := $(shell $(PYTHON_BIN_PATH) -c 'import tensorflow as tf; print(" ".join(tf.sysconfig.get_compile_flags()))')
 TF_LFLAGS := $(shell $(PYTHON_BIN_PATH) -c 'import tensorflow as tf; print(" ".join(tf.sysconfig.get_link_flags()))')
 
-CFLAGS = ${TF_CFLAGS} -fPIC -O2 -std=c++14
-NVCCFLAGS = -std=c++14 -c -gencode=arch=compute_80,code=compute_80 \
+CFLAGS = ${TF_CFLAGS} -fPIC -O2 -std=c++17
+NVCCFLAGS = -std=c++17 -c -gencode=arch=compute_80,code=compute_80 \
 						              -gencode=arch=compute_80,code=sm_80 \
 													-gencode=arch=compute_86,code=sm_86 \
 													-gencode=arch=compute_70,code=compute_70 \
