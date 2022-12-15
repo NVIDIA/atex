@@ -68,7 +68,7 @@ union Pack {
 template <typename T, typename... Ts, typename... Args>
 void LaunchVectorizedKernel(void (*func[3])(Ts...), dim3 grid_dim,
                             dim3 block_dim, size_t shared_memory_size_bytes,
-                            gpuStream_t stream, int D, Args&&... arguments) {
+                            gpuStream_t stream, size_t D, Args&&... arguments) {
   // Cases each func will be used.
   // func[2] : half and 4-elem aligned inputs
   // func[1] : float/half and 2-elem aligned inputs
@@ -89,7 +89,7 @@ void LaunchVectorizedKernel(void (*func[3])(Ts...), dim3 grid_dim,
 }
 
 template <typename T, typename U>
-inline __device__ U GetAs(const T* __restrict__ in, int offset) {
+inline __device__ U GetAs(const T* __restrict__ in, size_t offset) {
   return static_cast<U>(in[offset]);
 }
 
@@ -121,26 +121,27 @@ inline __device__ Pack<T, N> Add(const Pack<T, N>& a, const Pack<T, N>& b) {
 }
 
 template <typename T, int N>
-inline __device__ Pack<T, N> Load(const T* src, int offset = 0) {
+inline __device__ Pack<T, N> Load(const T* src, size_t offset = 0) {
   Pack<T, N> pack;
   pack.storage = *(reinterpret_cast<const PackType<T, N>*>(src) + offset / N);
   return pack;
 }
 
 template <typename T, int N>
-inline __device__ void Store(T* dst, const Pack<T, N>& pack, int offset = 0) {
+inline __device__ void Store(T* dst, const Pack<T, N>& pack,
+                             size_t offset = 0) {
   *(reinterpret_cast<PackType<T, N>*>(dst) + offset / N) = pack.storage;
 }
 
 template <typename T, typename U, int N>
-inline __device__ void CopyWithCast(const T* src, int src_offset, U* dst,
-                                    int dst_offset = 0) {
+inline __device__ void CopyWithCast(const T* src, size_t src_offset, U* dst,
+                                    size_t dst_offset = 0) {
   Pack<T, N> pack_t = Load<T, N>(src, src_offset);
   Store<U, N>(dst, Cast<T, U, N>(pack_t), dst_offset);
 }
 
 template <typename T, int N>
-inline __device__ void CopyWithDot(const T* src, int offset, T* dst) {
+inline __device__ void CopyWithDot(const T* src, size_t offset, T* dst) {
   // dst = src * dst
   Store<T, N>(dst, Dot(Load<T, N>(src, offset), Load<T, N>(dst)));
 }
@@ -154,9 +155,9 @@ inline __device__ Pack<T, N> ScaleAndOffset(const Pack<T, N>& src,
 
 template <typename T, typename U, int N>
 inline __device__ void CopyWithAffineAndCast(T* src, const T* scale,
-                                             int offset_s, const T* bias,
-                                             int offset_b, U* dst,
-                                             int offset_dst) {
+                                             size_t offset_s, const T* bias,
+                                             size_t offset_b, U* dst,
+                                             size_t offset_dst) {
   // dst = src * scale + bias
   auto src_vec = Load<T, N>(src);
   auto scale_vec = Load<T, N>(scale, offset_s);
@@ -168,7 +169,7 @@ inline __device__ void CopyWithAffineAndCast(T* src, const T* scale,
 
 template <typename T, typename U, int N>
 inline __device__ void CopyWithAffineAndCast(T* src, T scale, T bias, U* dst,
-                                             int offset_dst) {
+                                             size_t offset_dst) {
   // dst = src * scale + bias
   auto src_vec = Load<T, N>(src);
   auto scale_vec = Pack<T, N>(scale);
@@ -217,7 +218,7 @@ struct WFOp {
   WFOp(size_t d, U e) : D(d), epsilon(e) {}
   WFOp(size_t d, U e, size_t c) : D(d), epsilon(e), C_(c) {}
   inline void SetChannelDim(const size_t c) { C_ = c; }
-  inline __device__ int GetIndex(int row, int col) const {
+  inline __device__ size_t GetIndex(size_t row, size_t col) const {
     if (C_.has_value()) {
       // Channel last layout
       size_t C = C_.value();
@@ -227,7 +228,7 @@ struct WFOp {
     }
   }
 
-  inline __device__ int GetIndex(size_t row, size_t col, size_t z) const {
+  inline __device__ size_t GetIndex(size_t row, size_t col, size_t z) const {
     // Channel last layout
     size_t C = C_.value();
     return row * C * D + col * C + z;
@@ -263,7 +264,7 @@ struct MeanOp {
   absl::optional<size_t> C_;
   MeanOp(size_t d) : D(d) {}
   inline void SetChannelDim(const size_t c) { C_ = c; }
-  inline __device__ int GetIndex(int row, int col) const {
+  inline __device__ size_t GetIndex(size_t row, size_t col) const {
     if (C_.has_value()) {
       // Channel last layout
       size_t C = C_.value();
@@ -273,7 +274,7 @@ struct MeanOp {
     }
   }
 
-  inline __device__ int GetIndex(size_t row, size_t col, size_t z) const {
+  inline __device__ size_t GetIndex(size_t row, size_t col, size_t z) const {
     // Channel last layout
     size_t C = C_.value();
     return row * C * D + col * C + z;
@@ -591,16 +592,17 @@ struct DxFusedOp {
   const U* dl_dmus;
   size_t C;
   size_t D;
-  __device__ inline U Compute(U x, U dy, int idx, bool is_channel_first) const {
+  __device__ inline U Compute(U x, U dy, size_t idx,
+                              bool is_channel_first) const {
     U dl_dx;
     if (is_channel_first) {
-      int row = idx / D;
+      size_t row = idx / D;
       dl_dx = (dl_dvars[row] * (x - cache_mean[row]) + dl_dmus[row]) /
                   static_cast<U>(D) +
               dy * gamma[row % C] * cache_ivar[row];
     } else {
-      int col = idx % C;
-      int cache_idx = idx / (C * D) * C + idx % C;
+      size_t col = idx % C;
+      size_t cache_idx = idx / (C * D) * C + idx % C;
       dl_dx = (dl_dvars[cache_idx] * (x - cache_mean[cache_idx]) +
                dl_dmus[cache_idx]) /
                   static_cast<U>(D) +

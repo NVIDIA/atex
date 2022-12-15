@@ -4,7 +4,7 @@
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 #define EIGEN_USE_GPU
 
-#if GOOGLE_CUDAnor
+#if GOOGLE_CUDA
 
 #include "third_party/gpus/cuda/include/cuda.h"
 #endif
