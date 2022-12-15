@@ -4,6 +4,7 @@
 CXX := g++
 NVCC := nvcc
 PYTHON_BIN_PATH = python
+DEFAULT_COMPUTE_CAPABILITIES = 52,60,70,80,90
 
 COMMON_SRCS = $(filter-out nv_norms/cc/kernels/norm_util.h,$(wildcard nv_norms/cc/kernels/*.h)) $(wildcard nv_norms/cc/ops/*.cc)
 LN_SRCS = nv_norms/cc/kernels/fused_layer_norm_op.cc ${COMMON_SRCS}
@@ -13,14 +14,18 @@ TF_CFLAGS := $(shell $(PYTHON_BIN_PATH) -c 'import tensorflow as tf; print(" ".j
 TF_LFLAGS := $(shell $(PYTHON_BIN_PATH) -c 'import tensorflow as tf; print(" ".join(tf.sysconfig.get_link_flags()))')
 
 CFLAGS = ${TF_CFLAGS} -fPIC -O2 -std=c++17
-NVCCFLAGS = -std=c++17 -c -gencode=arch=compute_90,code=compute_90 \
-                          -gencode=arch=compute_80,code=compute_80 \
-                          -gencode=arch=compute_80,code=sm_80 \
-						  -gencode=arch=compute_86,code=sm_86 \
-						  -gencode=arch=compute_70,code=compute_70 \
-						  -gencode=arch=compute_70,code=sm_70 \
-						  -gencode=arch=compute_52,code=compute_52 \
-						  -gencode=arch=compute_52,code=sm_52
+NVCCFLAGS = -std=c++17 -c
+
+comma:=,
+ATEX_COMPUTE_CAPABILITIES ?= $(DEFAULT_COMPUTE_CAPABILITIES)
+ATEX_COMPUTE_CAPABILITIES := $(subst $(comma), ,$(ATEX_COMPUTE_CAPABILITIES))
+$(foreach SM,$(ATEX_COMPUTE_CAPABILITIES),\
+    $(eval NVCCFLAGS += -gencode arch=compute_$(SM),code=sm_$(SM)))
+MAX_SM = $(lastword $(sort $(ATEX_COMPUTE_CAPABILITIES)))
+ifneq ($(MAX_SM),)
+NVCCFLAGS += -gencode arch=compute_$(MAX_SM),code=compute_$(MAX_SM)
+endif
+
 LDFLAGS = -shared ${TF_LFLAGS}
 
 LN_GPU_ONLY_TARGET_LIB = nv_norms/python/ops/_fused_layer_norm_ops.cu.o
