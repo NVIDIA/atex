@@ -156,7 +156,7 @@ A legal value of optional argument `axis` is taken from (1, -1), where -1 is the
   include the last dimension, e.g., `[-3, -2, -1]` but not `[-3, -1]`. 
 
 ### Update Notes:
-* v0.0.2
+* v0.0.3
   * Improved the bandwidth usage of the instance normalization via
     vectorization.
   * Fixed a potential data race issue in the instance normalization kernels.
