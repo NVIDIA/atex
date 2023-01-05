@@ -1166,6 +1166,7 @@ template <typename T, typename U, typename Op, int PackSize>
 __global__ __launch_bounds__(1024) void GeneralNormRowReduceInToOutWelford(
     const T* x, size_t NxC, size_t D, U* out1, U* out2, Op op) {
   const int tid = threadIdx.x;
+  assert(D % PackSize == 0);
   const auto num_packs = D / PackSize;
   U pack[PackSize];
   for (size_t k = blockIdx.x; k < NxC; k += gridDim.x) {
@@ -1188,6 +1189,13 @@ __global__ __launch_bounds__(1024) void GeneralNormRowReduceInToOutWelford(
     }
   }
 }
+
+template <typename T, typename U, typename Op>
+void (*GeneralNormRowReduceInToOutWelfordCandidates[3])(const T*, size_t,
+                                                        size_t, U*, U*, Op){
+    GeneralNormRowReduceInToOutWelford<T, U, Op, 1>,
+    GeneralNormRowReduceInToOutWelford<T, U, Op, 2>,
+    GeneralNormRowReduceInToOutWelford<T, U, Op, 4>};
 
 template <typename T, typename U, typename Op>
 void InstanceNormReductionsChnlFirstWelford(OpKernelContext* context, size_t N,
@@ -1215,10 +1223,9 @@ void InstanceNormReductionsChnlFirstWelford(OpKernelContext* context, size_t N,
   dim3 blocks(blocks_per_row, N);
 
   if (use_single_block) {
-    TF_CHECK_OK(GpuLaunchKernel(
-        GeneralNormRowReduceInToOutWelford<T, U, Op,
-                                           PackSizeTraits<T>::PackSize>,
-        NxC, kBlockSize, 0, d.stream(), x, NxC, D, temp_1, temp_2, op));
+    LaunchVectorizedKernel<T>(
+        GeneralNormRowReduceInToOutWelfordCandidates<T, U, Op>, NxC, kBlockSize,
+        0, d.stream(), D, x, NxC, D, temp_1, temp_2, op);
 
     YOp<T, U> y_op{temp_1, temp_2, gamma, beta, C, D};
     TF_CHECK_OK(GpuLaunchKernel(
