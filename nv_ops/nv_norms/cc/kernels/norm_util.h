@@ -439,6 +439,10 @@ __inline__ __device__ WFGeneric<T> WelfordWarpReduce(
 template <typename T, typename Op, int BlockSize = kBlockSize>
 __inline__ __device__ T BlockAllReduce(const T& val, Op reduce_op,
                                        bool is_broadcast = false) {
+  // When broadcasting is not needed, a subsequent __syncthreads() threadblock
+  // barrier should be invoked after calling this method if the collective's
+  // temporary storage (e.g., temp_storage) is to be reused or repurposed. 
+  // See https://nvlabs.github.io/cub/classcub_1_1_block_reduce.html.                                         
   typedef gpuprim::BlockReduce<T, BlockSize> BlockReduce;
   __shared__ union temp_storage {
     typename BlockReduce::TempStorage reduce;

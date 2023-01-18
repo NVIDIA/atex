@@ -92,6 +92,7 @@ __global__ __launch_bounds__(1024) void InstanceNormTempToOutWelford(
 
     WFGeneric<U> wf_block =
         BlockAllReduce<WFGeneric<U>, WFGeneric<U>>(wf_partial, WFGeneric<U>());
+    __syncthreads();        
     if (threadIdx.x == 0) {
       cache_mean[k] = wf_block.mean;
       cache_ivar[k] = op.Finalize(wf_block);
@@ -221,7 +222,7 @@ __global__ void InstanceNormGradBlockSMemImpl(
     ComputeType dldvar_x2 =
         BlockAllReduce<ComputeType, gpuprim::Sum, BlockSize>(
             partial_sum2, gpuprim::Sum(), true);
-
+    __syncthreads();
     for (size_t pack_id = tid; pack_id < num_packs; pack_id += BlockSize) {
       for (int i = 0; i < PackSize; ++i) {
         const auto buf_offset = i * num_packs + pack_id;
@@ -238,6 +239,7 @@ __global__ void InstanceNormGradBlockSMemImpl(
     __syncthreads();
     ComputeType sum_beta = BlockAllReduce<ComputeType, gpuprim::Sum, BlockSize>(
         partial_sum4, gpuprim::Sum(), false);
+    __syncthreads();    
     if (tid == 0) {
       out1[row] = op.Finalize(dldmu);
       out2[row] = op.Finalize(dldvar_x2);
@@ -1183,6 +1185,7 @@ __global__ __launch_bounds__(1024) void GeneralNormRowReduceInToOutWelford(
 
     WFGeneric<U> wf_row =
         BlockAllReduce<WFGeneric<U>, WFGeneric<U>>(wf_thread, WFGeneric<U>());
+    __syncthreads();        
     if (tid == 0) {
       out1[k] = wf_row.mean;
       out2[k] = op.Finalize(wf_row);

@@ -552,7 +552,7 @@ __global__ __launch_bounds__(1024) void LayerNormRowReduceInToTemp(
     __syncthreads();
     ComputeType sum2 =
         BlockAllReduce<ComputeType, gpuprim::Sum>(partial_sum2, gpuprim::Sum());
-
+    __syncthreads();
     if (threadIdx.x == 0) {
       temp_1[row_idx * gridDim.x + blockIdx.x] = sum1;
       temp_2[row_idx * gridDim.x + blockIdx.x] = sum2;
@@ -592,6 +592,7 @@ __global__ __launch_bounds__(1024) void LayerNormRowReduceInToTempWelford(
     WFGeneric<ComputeType> wf_block =
         BlockAllReduce<WFGeneric<ComputeType>, WFGeneric<ComputeType>>(
             wf_partial, WFGeneric<ComputeType>());
+    __syncthreads();
     if (threadIdx.x == 0) {
       temp_mean[row_idx * gridDim.x + blockIdx.x] = wf_block.mean;
       temp_m2[row_idx * gridDim.x + blockIdx.x] = wf_block.m2;
@@ -623,7 +624,7 @@ __global__ __launch_bounds__(1024) void LayerNormRowReduceTempToOutWelford(
     }
     WFGeneric<U> wf_block =
         BlockAllReduce<WFGeneric<U>, WFGeneric<U>>(wf_partial, WFGeneric<U>());
-
+    __syncthreads();
     if (threadIdx.x == 0) {
       cache_mean[k] = wf_block.mean;
       cache_ivar[k] = op.Finalize(wf_block);
