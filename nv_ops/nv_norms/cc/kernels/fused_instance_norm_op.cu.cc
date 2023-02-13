@@ -286,7 +286,7 @@ inline Status TryDispatchInstanceNormGradBlockSMemImpl(
     TF_CHECK_OK(GpuLaunchKernel(fns, N, Bsize, smem, stream, x, dy, N, C, D, \
                                 mean, inv_variance, gamma, dx, out1, out2,   \
                                 out3, out4, op));                            \
-    return Status::OK();                                                     \
+    return OkStatus();                                                       \
   }
 
 #define TRY_PACK_SIZE(PSIZE)                       \
@@ -309,7 +309,7 @@ inline Status TryDispatchInstanceNormGradBlockSMemImpl(
   TF_CHECK_OK(GpuLaunchKernel(fns_base, N, kBlockSize, smem, stream, x, dy, N,
                               C, D, mean, inv_variance, gamma, dx, out1, out2,
                               out3, out4, op));
-  return Status::OK();
+  return OkStatus();
 }
 
 template <typename T, typename U, int PackSize>
@@ -1038,7 +1038,7 @@ inline Status TryDispatchInstanceNormBlockSMemChnlFirstImpl(
   if (blk_cnt == blk_cnt_base) { /*note : grid_dim = N * C*/                  \
     TF_CHECK_OK(GpuLaunchKernel(fns, N* C, Bsize, smem, stream, x, N, C, D,   \
                                 gamma, beta, y, mean, inv_variance, op));     \
-    return Status::OK();                                                      \
+    return OkStatus();                                                        \
   }
 #define TRY_PACK_SIZE(PSIZE)                       \
   TRY_AND_LAUNCH(kBlockSizeSearchSpace[0], PSIZE); \
@@ -1059,7 +1059,7 @@ inline Status TryDispatchInstanceNormBlockSMemChnlFirstImpl(
 #undef TRY_AND_LAUNCH
   TF_CHECK_OK(GpuLaunchKernel(fns_base, N * C, kBlockSize, smem, stream, x, N,
                               C, D, gamma, beta, y, mean, inv_variance, op));
-  return Status::OK();
+  return OkStatus();
 }
 
 template <typename T, typename ComputeType, typename Op, int BlockSize>
@@ -1147,7 +1147,7 @@ inline Status TryDispatchInstanceNormBlockSMemChnlLastImpl(
       TF_CHECK_OK(GpuLaunchKernel(fns, grid_dim, blk_dim, smem, stream, x, N, \
                                   C, D, gamma, beta, y, mean, inv_variance,   \
                                   op));                                       \
-      return Status::OK();                                                    \
+      return OkStatus();                                                      \
     }                                                                         \
   }
 
@@ -1161,7 +1161,7 @@ inline Status TryDispatchInstanceNormBlockSMemChnlLastImpl(
   dim3 grid_dim(DivUp(C, kWarpSize), 1, N);
   TF_CHECK_OK(GpuLaunchKernel(fns_base, grid_dim, blk_dim, smem, stream, x, N,
                               C, D, gamma, beta, y, mean, inv_variance, op));
-  return Status::OK();
+  return OkStatus();
 }
 
 template <typename T, typename U, typename Op, int PackSize>

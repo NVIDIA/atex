@@ -290,7 +290,7 @@ Status TryDispatchLayerNormBlockSMemImpl(gpuStream_t stream, const T* x,
   if (blk_cnt == blk_cnt_base) {                                             \
     TF_CHECK_OK(GpuLaunchKernel(fns, N, Bsize, smem, stream, x, gamma, beta, \
                                 N, D, y, mean, inv_variance, op));           \
-    return Status::OK();                                                     \
+    return OkStatus();                                                       \
   }
 #define TRY_PACK_SIZE(PSIZE)                       \
   TRY_AND_LAUNCH(kBlockSizeSearchSpace[0], PSIZE); \
@@ -309,7 +309,7 @@ Status TryDispatchLayerNormBlockSMemImpl(gpuStream_t stream, const T* x,
 
   TF_CHECK_OK(GpuLaunchKernel(fns_base, N, kBlockSize, smem, stream, x, gamma,
                               beta, N, D, y, mean, inv_variance, op));
-  return Status::OK();
+  return OkStatus();
 }
 
 template <typename T, typename ComputeType, typename Op1, typename Op2>
@@ -350,7 +350,7 @@ Status TryDispatchLayerNormGradBlockSMemImpl(gpuStream_t stream, const T* x,
   if (blk_cnt == blk_cnt_base) {                                              \
     TF_CHECK_OK(GpuLaunchKernel(fns, N, Bsize, smem, stream, x, dy, gamma, N, \
                                 D, mean, inv_variance, dx, op1, op2));        \
-    return Status::OK();                                                      \
+    return OkStatus();                                                        \
   }
 
 #define TRY_PACK_SIZE(PSIZE)                       \
@@ -368,7 +368,7 @@ Status TryDispatchLayerNormGradBlockSMemImpl(gpuStream_t stream, const T* x,
 #undef TRY_AND_LAUNCH
   TF_CHECK_OK(GpuLaunchKernel(fns_base, N, kBlockSize, smem, stream, x, dy,
                               gamma, N, D, mean, inv_variance, dx, op1, op2));
-  return Status::OK();
+  return OkStatus();
 }
 
 template <typename T, typename ComputeType, int PackSize>

@@ -48,7 +48,7 @@ Status GetBatchAndFeatureSizes(shape_inference::InferenceContext* c,
       *num_batches *= c->Value(c->Dim(x_shape, i));
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 }  // namespace
 
@@ -65,7 +65,7 @@ Status FusedLayerNormShape(shape_inference::InferenceContext* c) {
   c->set_output(0, x_shape);
   c->set_output(1, c->Vector(batch_dim));
   c->set_output(2, c->Vector(batch_dim));
-  return Status::OK();
+  return OkStatus();
 }
 
 Status FusedLayerNormGradShape(shape_inference::InferenceContext* c) {
@@ -82,7 +82,7 @@ Status FusedLayerNormGradShape(shape_inference::InferenceContext* c) {
   c->set_output(0, x_shape);
   c->set_output(1, c->Vector(channel_dim));
   c->set_output(2, c->Vector(channel_dim));
-  return Status::OK();
+  return OkStatus();
 }
 
 Status FusedInstanceNormShape(shape_inference::InferenceContext* c) {
@@ -114,7 +114,7 @@ Status FusedInstanceNormShape(shape_inference::InferenceContext* c) {
   c->set_output(0, x_shape);
   c->set_output(1, mean_var_shape);
   c->set_output(2, mean_var_shape);
-  return Status::OK();
+  return OkStatus();
 }
 
 Status FusedInstanceNormGradShape(shape_inference::InferenceContext* c) {
@@ -140,7 +140,7 @@ Status FusedInstanceNormGradShape(shape_inference::InferenceContext* c) {
   c->set_output(0, x_shape);
   c->set_output(1, c->Vector(channel_dim));
   c->set_output(2, c->Vector(channel_dim));
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace shape_inference

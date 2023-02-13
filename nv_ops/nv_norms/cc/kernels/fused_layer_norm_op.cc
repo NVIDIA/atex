@@ -278,7 +278,7 @@ Status GetBatchAndFeatureSizes(const Tensor& x, const std::vector<int>& axis,
       *num_batches *= x.dim_size(i);
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 }  // namespace
 
