@@ -1,46 +1,54 @@
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 # ==============================================================================
+import argparse
 import nv_norms
 import tensorflow as tf
 import time
 
 from tensorflow.keras import mixed_precision
 
+parser = argparse.ArgumentParser(description='Benchmark configs')
+parser.add_argument('--xla', action='store_true', help='Use XLA for reference')
+args = parser.parse_args()
+
+use_xla = args.xla
+
+def train_step_func(x, layerN):
+  with tf.GradientTape() as tape:
+    tape.watch(x)
+    y = layerN(x)
+    loss = tf.reduce_sum(y)
+  dx, (dgamma, dbeta) = tape.gradient(loss, [x, layerN.variables])
+  return dx, dgamma, dbeta
+
 def benchmark_fn(input_shape, use_nv_ops):
   mixed_precision.set_global_policy('mixed_float16')
   warmup = 10
-  repeat = 100
+  repeat = 20
 
-  layerN = tf.keras.layers.LayerNormalization(axis=(1,))
+  train_step = train_step_func
   if use_nv_ops:
     layerN = nv_norms.LayerNormalization(axis=(1,))
+  else:
+    layerN = tf.keras.layers.LayerNormalization(axis=(1,))
+    if use_xla:
+      train_step = tf.function(train_step, jit_compile=True)
 
-  def train_step(x):
-    with tf.GradientTape() as tape:
-      tape.watch(x)
-      y = layerN(x)
-      loss = tf.reduce_sum(y)
-    dx, (dgamma, dbeta) = tape.gradient(loss, [x, layerN.variables])
-    return dx, dgamma, dbeta
+  layerN.build(input_shape)
 
   data = tf.random.normal(input_shape)
-  if use_nv_ops:
-    # We manually cast the input to fp16. In practice, however, the output of
-    # the previous layer should already be fp16 when using 'mixed_float16'.
-    data = tf.cast(data, tf.float16)
 
   for i in range(warmup):
-    dx, dgamma, dbeta = train_step(data)
+    dx, dgamma, dbeta = train_step(data, layerN)
   _ = tf.reduce_sum(dx).numpy()
 
   start = time.time()
   for i in range(repeat):
-    dx, dgamma, dbeta = train_step(data)
+    dx, dgamma, dbeta = train_step(data, layerN)
   _ = tf.reduce_sum(dx).numpy()
 
   result = time.time() - start
   return 1000 * result / repeat
-
 
 input_shapes = [
     (10, 10000000),

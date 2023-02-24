@@ -1,5 +1,6 @@
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 # ==============================================================================
+import argparse
 import nv_norms
 import tensorflow as tf
 import tensorflow_addons as tfa
@@ -7,36 +8,45 @@ import time
 
 from tensorflow.keras import mixed_precision
 
-def benchmark_fn(input_shape, use_nv_ops, axis=-1):
+parser = argparse.ArgumentParser(description='Benchmark configs')
+parser.add_argument('--xla', action='store_true', help='Use XLA for reference')
+args = parser.parse_args()
+
+use_xla = args.xla
+
+def train_step_func(x, instanceN):
+  with tf.GradientTape() as tape:
+    tape.watch(x)
+    y = instanceN(x)
+    loss = tf.reduce_sum(y)
+  dx, (dgamma, dbeta) = tape.gradient(loss, [x, instanceN.variables])
+  return dx, dgamma, dbeta
+
+def benchmark_fn(input_shape, use_nvops, axis):
   mixed_precision.set_global_policy('mixed_float16')
   warmup = 10
   repeat = 20
-  instanceN = tfa.layers.InstanceNormalization(axis=axis)
-  if use_nv_ops:
-    instanceN = nv_norms.InstanceNormalization(axis=axis)
 
-  def train_step(x):
-    with tf.GradientTape() as tape:
-      tape.watch(x)
-      y = instanceN(x)
-      loss = tf.reduce_sum(y)
-    dx, (dgamma, dbeta) = tape.gradient(loss, [x, instanceN.variables])
-    return dx, dgamma, dbeta
+  train_step = train_step_func
+  if use_nvops:
+    instanceN = nv_norms.InstanceNormalization(axis=axis)
+  else:
+    instanceN = tfa.layers.InstanceNormalization(axis=axis)
+    if use_xla:
+      train_step = tf.function(train_step, jit_compile=True)
+
+  instanceN.build(input_shape)
 
   data = tf.random.normal(input_shape)
-  if use_nv_ops:
-    # We manually cast the input to fp16. In practice, however, the output of
-    # the previous layer should already be fp16 when using 'mixed_float16'.
-    data = tf.cast(data, tf.float16)
 
   for i in range(warmup):
-    dx, dgamma, dbeta = train_step(data)
+    dx, dgamma, dbeta = train_step(data, instanceN)
 
   _ = tf.reduce_sum(dx).numpy()
 
   start = time.time()
   for i in range(repeat):
-    dx, dgamma, dbeta = train_step(data)
+    dx, dgamma, dbeta = train_step(data, instanceN)
 
   _ = tf.reduce_sum(dx).numpy()
 
