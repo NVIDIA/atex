@@ -156,6 +156,11 @@ A legal value of optional argument `axis` is taken from (1, -1), where -1 is the
   include the last dimension, e.g., `[-3, -2, -1]` but not `[-3, -1]`. 
 
 ### Update Notes:
+* v0.0.4
+  * Fixed a bug for the instance norm in selecting kernel path when the feature
+    dim is odd.
+  * Fixed a potential race-condition bug in the instance and layer norm.
+
 * v0.0.3
   * Improved the bandwidth usage of the instance normalization via
     vectorization.
