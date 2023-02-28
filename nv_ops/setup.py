@@ -23,7 +23,7 @@ from setuptools import setup
 from setuptools.dist import Distribution
 
 
-__version__ = '0.0.2'
+__version__ = '0.0.4'
 REQUIRED_PACKAGES = [
     'tensorflow >= 2.1.0',
 ]
