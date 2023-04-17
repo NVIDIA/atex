@@ -2,13 +2,10 @@ __pycache__/
 **/*.png
 **/*.nsys-rep
 **/*.sqlite
-**/*.pkl
 **/*.cu.o
 **/*.so
 **/*.whl
 **/*.pkl
-**/*.sqlite
-**/*.nsys-rep
 .vscode/
 structured_sparsity/exported_model/
 build/
