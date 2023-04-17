@@ -1,8 +1,8 @@
-nv_ops/nv_norms/python/__pycache__/*
-nv_ops/nv_norms/python/ops/__pycache__/*
-nv_ops/nv_norms/python/ops/__pycache__/*
-nv_ops/nv_norms/__pycache__/*
-nv_ops/nv_norms/python/ops/*.cu.o
-nv_ops/nv_norms/python/ops/*.so
-nv_ops/artifacts/*.whl
-.vscode/*
+__pycache__/
+**/*.cu.o
+**/*.so
+**/*.whl
+**/*.pkl
+**/*.sqlite
+**/*.nsys-rep
+.vscode/
