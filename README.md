@@ -19,6 +19,15 @@ compute the norms in a single operation, eliminating many expensive round-trips
 to device memory and significantly improving performance. More in
 [nv_ops](./nv_ops/).
 
+### 2. Structured Sparsity
+
+This is a project for Tensorflow on supporting fine-grained structured sparsity
+for the NVIDIA Ampere GPU architecture. We only need users to add a couple lines
+to their python script and then the pretrained model can be automatically pruned
+to benefit from the sparse Tensor Cores (available from Ampere GPUs) to achieve
+faster inference speed after deployment. More in
+[structured_sparsity](./structured_sparsity/).
+
 ## Contribution guidelines
 
 Please review the [Contribution Guidelines](CONTRIBUTING.md). 
