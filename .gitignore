@@ -1,4 +1,8 @@
 __pycache__/
+**/*.png
+**/*.nsys-rep
+**/*.sqlite
+**/*.pkl
 **/*.cu.o
 **/*.so
 **/*.whl
