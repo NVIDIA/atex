@@ -26,5 +26,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from .fp8_module.dense import Dense
+from .fp8_module.dense import DenseGeneral
+from .fp8_module.dense import FP8Helper
+from .fp8_module.dense import TrainState
 

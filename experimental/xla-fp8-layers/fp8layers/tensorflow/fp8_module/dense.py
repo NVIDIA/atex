@@ -2,6 +2,7 @@
 
 import tensorflow as tf
 
+from keras.mixed_precision import policy
 from tensorflow.python.framework import dtypes
 
 def get_fp8_max(fp8_dtype):
@@ -178,16 +179,10 @@ class Dense(tf.keras.layers.Dense):
       if (isinstance(inputs, tf.RaggedTensor) or
           isinstance(inputs, tf.SparseTensor)):
         return super().call(inputs)
-        
+
       if inputs.dtype.base_dtype != self._compute_dtype_object.base_dtype:
         inputs = tf.cast(inputs, dtype=self._compute_dtype_object)
-      else:
-        # Under non-mixed precision cases, F32 bias has to be converted to BF16
-        # first to get the biasAdd fusion support. ref. PR
-        # https://github.com/tensorflow/tensorflow/pull/60306 
-        bias_bf16 = tf.cast(self.bias, dtypes.bfloat16)
-        self.bias = tf.cast(bias_bf16, dtypes.float32)
-
+      
       # We explicitly reshape the inputs to 2D before the qdq to avoid the
       # complex cases where the reshape/transpose are inserted in between the
       # qdq and matmul. Similarly, we apply the reshape after the qdq of output.
@@ -197,13 +192,21 @@ class Dense(tf.keras.layers.Dense):
 
       outputs = tf.matmul(a=self.in_qdq(a),
                           b=self.kernel_qdq(self.kernel))
-      // out_qdq is placed immediately after matmul for the sake of pattern 
-      // matching in gemm_rewrite. That way, the qdq is adjacent to the matmul_bprop
-      // in back prop.
+
+      # out_qdq is placed immediately after matmul for the sake of pattern
+      # matching in gemm_rewrite. That way, the qdq will be adjacent to the
+      # corresponding matmul_bprop in the bprop.
       outputs = self.out_qdq(outputs)
       
       if self.use_bias:
-        outputs = tf.nn.bias_add(outputs, self.bias)
+        bias_cast = self.bias
+        # Under non-mixed precision cases, F32 bias has to be converted to BF16
+        # first to get the biasAdd fusion support. ref. PR
+        # https://github.com/tensorflow/tensorflow/pull/60306 
+        if policy.global_policy().name == 'float32':
+          bias_bf16 = tf.cast(self.bias, dtypes.bfloat16)
+          bias_cast = tf.cast(bias_bf16, self.bias.dtype)
+        outputs = tf.nn.bias_add(outputs, bias_cast)
 
       if self.activation is not None:
         outputs = self.activation(outputs)

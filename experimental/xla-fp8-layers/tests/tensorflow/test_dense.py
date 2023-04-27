@@ -5,11 +5,11 @@ from __future__ import print_function
 
 import functools
 import os
+import re
 import tensorflow as tf
 
 from contextlib import contextmanager
 from tensorflow.python.framework import dtypes
-from tensorflow.python.framework import test_util
 from tensorflow.python.platform import test
 from tensorflow.keras import layers, initializers, optimizers
 
@@ -41,10 +41,11 @@ def compute_scale(amax, scale, fp8_max, margin=0):
 class DenseTest(test.TestCase):
   def setUp(self):
     super(DenseTest, self).setUp()
+    os.environ['XLA_FLAGS'] = "--xla_gpu_enable_cublaslt=true"
+    tf.keras.mixed_precision.set_global_policy('mixed_float16')
 
-  @test_util.run_gpu_only
   def testDenseFwd(self):
-    x = tf.random.uniform((4, 8, 16), dtype=tf.float32)
+    x = tf.random.uniform((4, 8, 16))
     init = initializers.RandomUniform(minval=0., maxval=1.)
 
     dense_kwargs = {
@@ -68,10 +69,9 @@ class DenseTest(test.TestCase):
 
     self.assertAllClose(y, y_ref, 0.05, 0.01)
 
-  @test_util.run_gpu_only
   def testDenseBwd(self):
-    x = tf.random.uniform(shape=(4, 8, 16), dtype=tf.float32)
-    dy = tf.random.uniform(shape=(4, 8, 32), dtype=tf.float32)
+    x = tf.random.uniform(shape=(4, 8, 16))
+    dy = tf.random.uniform(shape=(4, 8, 32))
     init = initializers.RandomUniform(minval=0., maxval=1.)
 
     dense_kwargs = {
@@ -102,16 +102,10 @@ class DenseTest(test.TestCase):
     self.assertAllClose(dw, dw_ref, 0.05, 0.01, msg='dweight tensor')
     self.assertAllClose(db, db_ref, 0.05, 0.01, msg='dbias tensor')
 
-  @test_util.run_gpu_only
   def testDenseBwdHlo(self):
-    x = tf.random.uniform(shape=(4, 8, 16), dtype=tf.float32)
-    dy = tf.random.uniform(shape=(4, 8, 32), dtype=tf.float32)
-
-    dense_kwargs = {
-        "units": 32,
-        "use_bias": True,
-    }
-    dense = Dense(**dense_kwargs)
+    x = tf.random.uniform(shape=(4, 8, 16))
+    dy = tf.random.uniform(shape=(4, 8, 32))
+    dense = Dense(32, use_bias=True)
 
     # Use the optimizer to apply the gradients to mimic the real world usage.
     optimizer = optimizers.Adam(0.01)
@@ -128,8 +122,8 @@ class DenseTest(test.TestCase):
       return dx, y
 
     hlo = _train_step_demo.experimental_get_compiler_ir(x, dy)('optimized_hlo')
-    self.assertContainsInOrder(
-        [
+    self.assertRegex(
+        hlo, re.compile('.*'.join([re.escape(x) for x in (
             'cublas',
             'f16[32,32]{1,0}',
             'custom-call',
@@ -137,47 +131,89 @@ class DenseTest(test.TestCase):
             'f8e4m3fn[32,16]{1,0}',
             'epilogue',
             'BIAS',
-        ], hlo, msg='y tensor')
-    self.assertContainsInOrder(
-        [
+        )])), msg='y tensor')
+    self.assertRegex(
+        hlo, re.compile('.*'.join([re.escape(x) for x in (
             'cublas',
             'f16[16,32]{1,0}',
             'custom-call',
             'f8e4m3fn[16,32]{1,0}',
             'f8e5m2[32,32]{1,0}',
-        ], hlo, msg="dx tensor")
-    self.assertContainsInOrder(
-        [
+        )])), msg="dx tensor")
+    self.assertRegex(
+        hlo, re.compile('.*'.join([re.escape(x) for x in (
             'cublas',
             'f16[32,16]{1,0}',
             'custom-call',
             'f8e5m2[32,32]{1,0}',
             'f8e4m3fn[16,32]{1,0}',
-        ], hlo, msg="dw tensor")
+        )])), msg="dw tensor")
 
-
-  @test_util.run_gpu_only
-  def testMatMul(self):
+  def testMatMulBias(self):
     f8e4m3 = dtypes.float8_e4m3fn
     f8e5m2 = dtypes.float8_e5m2
     E4M3_max = f8e4m3.max
-    
-    # The input dtype can be either fp16 or fp32. For both dtypes, the correct
-    # GEMM calls will be triggered. However, we have to use fp32 in this test so
-    # that the generated "optimized_hlo" can display the right GEMM output
-    # dtype.
-    # TODO(kaixih): Add test for fp16 when the above gets fixed.
-    in_dtype = dtypes.float32
-    a = tf.random.uniform((16, 64), dtype=in_dtype)
-    b = tf.random.uniform((64, 16), dtype=in_dtype)
     
     a_scale = tf.constant(1.0)
     b_scale = tf.constant(1.0)
     c_scale = tf.constant(1.0)
     
-    # Convert to FP8.
-    a_fp8 = tf.cast(a, f8e4m3)
-    b_fp8 = tf.cast(b, f8e4m3)
+    @tf.function(jit_compile=True)
+    def matmul_fp8(a_fp8, a_scale, b_fp8, b_scale, c_scale, bias):
+        # Dequantize the inputs.
+        a = tf.cast(a_fp8, in_dtype) * tf.cast(a_scale, in_dtype)
+        b = tf.cast(b_fp8, in_dtype) * tf.cast(b_scale, in_dtype)
+    
+        if in_dtype == dtypes.float32:
+          bias_cast = tf.cast(bias, dtypes.bfloat16)
+          bias_cast = tf.cast(bias_cast, in_dtype)
+        else:
+          bias_cast = bias
+
+        # Call the GEMM operation.
+        c = tf.matmul(a, b) + bias_cast
+    
+        # Quantize the output.
+        saturated_c = tf.clip_by_value(c / tf.cast(c_scale, in_dtype),
+                                       -E4M3_max, E4M3_max)
+        c_fp8 = tf.cast(saturated_c, f8e4m3)
+        new_c_scale = tf.reduce_max(tf.abs(c)) / E4M3_max
+    
+        # Return the new scaling factors along with the results.
+        # The new scaling factors will be used in the next training step (aka
+        # the delayed scaling).
+        return c_fp8, new_c_scale
+
+    for in_dtype in [dtypes.float16, dtypes.float32]:
+      a = tf.random.uniform((16, 64), dtype=in_dtype)
+      b = tf.random.uniform((64, 16), dtype=in_dtype)
+      bias = tf.random.uniform((16,), dtype=in_dtype)
+      
+      # Convert to FP8.
+      a_fp8 = tf.cast(a, f8e4m3)
+      b_fp8 = tf.cast(b, f8e4m3)
+      
+      hlo = matmul_fp8.experimental_get_compiler_ir(
+          a_fp8, a_scale, b_fp8, b_scale, c_scale, bias)('optimized_hlo')
+      self.assertRegex(
+          hlo, re.compile('.*'.join([re.escape(x) for x in (
+              'cublas',
+              'f8e4m3fn[16,16]{1,0}',
+              'custom-call',
+              'f8e4m3fn[16,64]{1,0}',
+              'f8e4m3fn[16,64]{1,0}',
+              'epilogue',
+              'BIAS',
+          )])), msg="out tensor")
+
+  def testMatMul(self):
+    f8e4m3 = dtypes.float8_e4m3fn
+    f8e5m2 = dtypes.float8_e5m2
+    E4M3_max = f8e4m3.max
+    
+    a_scale = tf.constant(1.0)
+    b_scale = tf.constant(1.0)
+    c_scale = tf.constant(1.0)
     
     @tf.function(jit_compile=True)
     def matmul_fp8(a_fp8, a_scale, b_fp8, b_scale, c_scale):
@@ -198,154 +234,153 @@ class DenseTest(test.TestCase):
         # The new scaling factors will be used in the next training step (aka
         # the delayed scaling).
         return c_fp8, new_c_scale
-    
-    c_fp8, c_scale = matmul_fp8(a_fp8, a_scale, b_fp8, b_scale, c_scale)
-    
-    hlo = matmul_fp8.experimental_get_compiler_ir(
-        a_fp8, a_scale, b_fp8, b_scale, c_scale)('optimized_hlo')
-    self.assertContainsInOrder(
-        [
-            'cublas',
-            'f8e4m3fn[16,16]{1,0}',
-            'custom-call',
-            'f8e4m3fn[16,64]{1,0}',
-            'f8e4m3fn[16,64]{1,0}',
-        ], hlo, msg="out tensor")
 
-  @test_util.run_gpu_only
+    for in_dtype in [dtypes.float16, dtypes.float32]:
+      a = tf.random.uniform((16, 64), dtype=in_dtype)
+      b = tf.random.uniform((64, 16), dtype=in_dtype)
+      
+      # Convert to FP8.
+      a_fp8 = tf.cast(a, f8e4m3)
+      b_fp8 = tf.cast(b, f8e4m3)
+      
+      hlo = matmul_fp8.experimental_get_compiler_ir(
+          a_fp8, a_scale, b_fp8, b_scale, c_scale)('optimized_hlo')
+      self.assertRegex(
+          hlo, re.compile('.*'.join([re.escape(x) for x in (
+              'cublas',
+              'f8e4m3fn[16,16]{1,0}',
+              'custom-call',
+              'f8e4m3fn[16,64]{1,0}',
+              'f8e4m3fn[16,64]{1,0}',
+          )])), msg="out tensor")
+
   def testDenseDenseFwdHlo(self):
-    # See testMatMul for why we have to disable the mixed precision.
-    # TODO(kaixih): Add test for fp16 when the above gets fixed.
-    with disable_mixed_precision():
-      x = tf.random.uniform(shape=(4, 8, 16), dtype=tf.float32)
+    for use_fp32 in [True, False]:
+      with disable_mixed_precision(use_fp32):
+        dtype_str = 'f32' if use_fp32 else 'f16'
+        x = tf.random.uniform(shape=(4, 8, 16))
 
-      dense_kwargs = {
-          "units": 32,
-          "use_bias": True,
-      }
-      dense0 = Dense(**dense_kwargs)
-      dense1 = Dense(**dense_kwargs)
+        dense_kwargs = {
+            "units": 32,
+            "use_bias": True,
+        }
+        dense0 = Dense(**dense_kwargs)
+        dense1 = Dense(**dense_kwargs)
 
-      @tf.function(jit_compile=True)
-      def _infer_step(x):
-        y = dense0(x)
-        y = dense1(y)
-        return y
-
-      # TODO(kaixih): when fp16 is supported, we don't need to run the jit'd
-      # function to get the cublaslt logs.
-      y = _infer_step(x)
-      hlo = _infer_step.experimental_get_compiler_ir(x)('optimized_hlo')
-      self.assertContainsInOrder(
-          [
-              'cublas',
-              'f8e4m3fn[32,32]{1,0}',
-              'custom-call',
-              'f8e4m3fn[32,16]{1,0}',
-              'f8e4m3fn[32,16]{1,0}',
-              'epilogue',
-              'BIAS',
-          ], hlo, msg="out tensor from 1st dense")
-      self.assertContainsInOrder(
-          [
-              'cublas',
-              'f32[32,32]{1,0}',
-              'custom-call',
-              'f8e4m3fn[32,32]{1,0}',
-              'f8e4m3fn[32,32]{1,0}',
-          ], hlo, msg="out tensor from 2nd dense")
-
-
-  @test_util.run_gpu_only
-  def testDenseDenseBwdHlo(self):
-    # See testMatMul for why we have to disable the mixed precision.
-    # TODO(kaixih): Add test for fp16 when the above gets fixed.
-    with disable_mixed_precision():
-      x = tf.random.uniform(shape=(4, 8, 16), dtype=tf.float32)
-      dy = tf.random.uniform(shape=(4, 8, 32), dtype=tf.float32)
-
-      dense_kwargs = {
-          "units": 32,
-          "use_bias": True,
-      }
-      dense0 = Dense(**dense_kwargs)
-      dense1 = Dense(**dense_kwargs)
-
-      # Use the optimizer to apply the gradients to mimic the real world usage.
-      optimizer = optimizers.Adam(0.01)
-
-      @tf.function(jit_compile=True)
-      def _train_step(x, dy):
-        with tf.GradientTape(persistent=True) as tape:
-          tape.watch(x)
+        @tf.function(jit_compile=True)
+        def _infer_step(x):
           y = dense0(x)
           y = dense1(y)
-          loss = y * tf.cast(dy, y.dtype)
+          return y
 
-        variables = dense0.trainable_variables + dense1.trainable_variables
+        hlo = _infer_step.experimental_get_compiler_ir(x)('optimized_hlo')
+        self.assertRegex(
+            hlo, re.compile('.*'.join([re.escape(x) for x in (
+                'cublas',
+                'f8e4m3fn[32,32]{1,0}',
+                'custom-call',
+                'f8e4m3fn[32,16]{1,0}',
+                'f8e4m3fn[32,16]{1,0}',
+                'epilogue',
+                'BIAS',
+            )])), msg="out tensor from 1st dense")
+        self.assertRegex(
+            hlo, re.compile('.*'.join([re.escape(x) for x in (
+                'cublas',
+                dtype_str,
+                '[32,32]{1,0}',
+                'custom-call',
+                'f8e4m3fn[32,32]{1,0}',
+                'f8e4m3fn[32,32]{1,0}',
+            )])), msg="out tensor from 2nd dense")
 
-        dx, grads = tape.gradient(loss, [x, variables])
-        optimizer.apply_gradients(zip(grads, variables))
-        return dx, y
+  def testDenseDenseBwdHlo(self):
+    for use_fp32 in [True, False]:
+      with disable_mixed_precision(use_fp32):
+        dtype_str = 'f32' if use_fp32 else 'f16'
+        x = tf.random.uniform(shape=(4, 8, 16))
+        dy = tf.random.uniform(shape=(4, 8, 32))
 
-      # TODO(kaixih): when fp16 is supported, we don't need to run the jit'd
-      # function to get the cublaslt logs.
-      dx, y = _train_step(x, dy)
-      hlo = _train_step.experimental_get_compiler_ir(x, dy)('optimized_hlo')
-      self.assertContainsInOrder(
-          [
-              'cublas',
-              'f8e4m3fn[32,32]{1,0}',
-              'custom-call',
-              'f8e4m3fn[32,16]{1,0}',
-              'f8e4m3fn[32,16]{1,0}',
-              'epilogue',
-              'BIAS',
-          ], hlo, msg="out tensor from 1st dense")
-      self.assertContainsInOrder(
-          [
-              'cublas',
-              'f32[32,32]{1,0}',
-              'custom-call',
-              'f8e4m3fn[32,32]{1,0}',
-              'f8e4m3fn[32,32]{1,0}',
-              'epilogue',
-              'BIAS',
-          ], hlo, msg="out tensor from 2nd dense")
-      self.assertContainsInOrder(
-          [
-              'cublas',
-              'f8e5m2[32,32]{1,0}',
-              'custom-call',
-              'f8e5m2[32,32]{1,0}',
-              'f8e4m3fn[32,32]{1,0}',
-          ], hlo, msg="dx tensor from 2nd dense")
-      self.assertContainsInOrder(
-          [
-              'cublas',
-              'f32[32,32]{1,0}',
-              'custom-call',
-              'f8e4m3fn[32,32]{1,0}',
-              'f8e5m2[32,32]{1,0}',
-          ], hlo, msg="dw tensor from 2nd dense")
-      self.assertContainsInOrder(
-          [
-              'cublas',
-              'f32[32,16]{1,0}',
-              'custom-call',
-              'f8e5m2[32,32]{1,0}',
-              'f8e4m3fn[16,32]{1,0}',
-          ], hlo, msg="dx tensor from 1st dense")
-      self.assertContainsInOrder(
-          [
-              'cublas',
-              'f32[16,32]{1,0}',
-              'custom-call',
-              'f8e4m3fn[16,32]{1,0}',
-              'f8e5m2[32,32]{1,0}',
-          ], hlo, msg="dw tensor from 1st dense")
+        # In the bprop, the dy (=dx of the 2nd dense) will be used to compute
+        # the dbias of the 1st dense in higher precision. This will force the dy
+        # to be in higher precison. To test the fp8 output, we need to disable
+        # the bias.
+        dense0 = Dense(32, use_bias=False)
+        dense1 = Dense(32)
 
-  @test_util.run_gpu_only
+        # Use the optimizer to apply the gradients to mimic the real world case.
+        optimizer = optimizers.Adam(0.01)
+
+        @tf.function(jit_compile=True)
+        def _train_step(x, dy):
+          with tf.GradientTape(persistent=True) as tape:
+            tape.watch(x)
+            y = dense0(x)
+            y = dense1(y)
+            loss = y * tf.cast(dy, y.dtype)
+
+          variables = dense0.trainable_variables + dense1.trainable_variables
+
+          dx, grads = tape.gradient(loss, [x, variables])
+          optimizer.apply_gradients(zip(grads, variables))
+          return dx, y
+
+        hlo = _train_step.experimental_get_compiler_ir(x, dy)('optimized_hlo')
+        self.assertRegex(
+            hlo, re.compile('.*'.join([re.escape(x) for x in (
+                'cublas',
+                'f8e5m2[32,32]{1,0}',
+                'custom-call',
+                'f8e5m2[32,32]{1,0}',
+                'f8e4m3fn[32,32]{1,0}',
+            )])), msg="dx tensor from 2nd dense")
+        self.assertRegex(
+            hlo, re.compile('.*'.join([re.escape(x) for x in (
+                'cublas',
+                dtype_str,
+                '[16,32]{1,0}',
+                'custom-call',
+                'f8e4m3fn[16,32]{1,0}',
+                'f8e5m2[32,32]{1,0}',
+            )])), msg="dw tensor from 1st dense")
+        self.assertRegex(
+            hlo, re.compile('.*'.join([re.escape(x) for x in (
+                'cublas',
+                dtype_str,
+                '[32,16]{1,0}',
+                'custom-call',
+                'f8e5m2[32,32]{1,0}',
+                'f8e4m3fn[16,32]{1,0}',
+          )])), msg="dx tensor from 1st dense")
+        self.assertRegex(
+            hlo, re.compile('.*'.join([re.escape(x) for x in (
+                'cublas',
+                'f8e4m3fn[32,32]{1,0}',
+                'custom-call',
+                'f8e4m3fn[32,16]{1,0}',
+                'f8e4m3fn[32,16]{1,0}',
+            )])), msg="out tensor from 1st dense")
+        self.assertRegex(
+            hlo, re.compile('.*'.join([re.escape(x) for x in (
+                'cublas',
+                dtype_str,
+                '[32,32]{1,0}',
+                'custom-call',
+                'f8e4m3fn[32,32]{1,0}',
+                'f8e4m3fn[32,32]{1,0}',
+                'epilogue',
+                'BIAS',
+            )])), msg="out tensor from 2nd dense")      
+        self.assertRegex(
+            hlo, re.compile('.*'.join([re.escape(x) for x in (
+                'cublas',
+                dtype_str,
+                '[32,32]{1,0}',
+                'custom-call',
+                'f8e4m3fn[32,32]{1,0}',
+                'f8e5m2[32,32]{1,0}',
+           )])), msg="dw tensor from 2nd dense")
+
   def testDenseFwdAmaxBookkeeping(self):
 
     dense_kwargs = {
@@ -374,8 +409,8 @@ class DenseTest(test.TestCase):
     scale_dy = tf.ones(())
 
     for _ in range(5):
-      x = tf.random.normal(shape=(4, 8, 16), dtype=tf.float32)
-      dy = tf.random.normal(shape=(4, 8, 32), dtype=tf.float32)
+      x = tf.random.normal(shape=(4, 8, 16))
+      dy = tf.random.normal(shape=(4, 8, 32))
 
       _, grads, _ = _train_step(x, dy)
       amax_history_x = roll_and_update(amax_history_x, tf.reduce_max(tf.abs(x)))
@@ -408,6 +443,5 @@ class DenseTest(test.TestCase):
 
 
 if __name__ == '__main__':
-    tf.keras.mixed_precision.set_global_policy('mixed_float16')
     test.main()
 

@@ -3,8 +3,15 @@ import re
 import time
 from dataclasses import dataclass
 from functools import partial
-from typing import (Any, Callable, Iterable, List, Mapping, Optional, Sequence,
-                    Tuple, Union)
+from typing import Any
+from typing import Callable
+from typing import Iterable
+from typing import List
+from typing import Mapping
+from typing import Optional
+from typing import Sequence
+from typing import Tuple
+from typing import Union
 
 import flax
 import jax
@@ -13,11 +20,11 @@ import optax
 import tensorflow as tf
 from flax import linen as nn
 from flax import struct
-from flax.traverse_util import flatten_dict, unflatten_dict
+from flax.traverse_util import flatten_dict
+from flax.traverse_util import unflatten_dict
+from fp8layers.jax import Dense
 from jax import lax
 from tensorflow import summary
-
-from fp8layers.jax import Dense
 
 parser = argparse.ArgumentParser(description='config')
 parser.add_argument('--fp8', action='store_true', help='use_fp8')
@@ -39,10 +46,8 @@ Initializer = Callable[[PRNGKey, Shape, DType], Array]
 
 def tree_shape(x): return jax.tree_map(lambda v: v.shape, x)
 
-ext_kwargs = {}
 if use_fp8:
   DenseLayer = Dense
-  ext_kwargs['use_quant'] = True
 else:
   DenseLayer = nn.DenseGeneral
 
@@ -58,7 +63,6 @@ def _convert_to_activation_function(
   else:
     raise ValueError("don't know how to convert %s to an activation function" %
                      (fn_or_string,))
-
 
 class MlpBlock(nn.Module):
   """Transformer MLP / feed-forward block.
@@ -90,7 +94,7 @@ class MlpBlock(nn.Module):
       x = DenseLayer(
           self.ffn_hidden_size,
           kernel_init=self.kernel_init,
-          name=dense_name, **ext_kwargs)(inputs)
+          name=dense_name)(inputs)
       x = _convert_to_activation_function(act_fn)(x)
       activations.append(x)
 
@@ -99,7 +103,7 @@ class MlpBlock(nn.Module):
     output = DenseLayer(
         self.hidden_size,
         kernel_init=self.kernel_init,
-        name='wo', **ext_kwargs)(x)
+        name='wo')(x)
     return output
 
 class DotProductAttention(nn.Module):
@@ -182,10 +186,8 @@ class BasicTransformer(nn.Module):
     self.ln2 = nn.LayerNorm(epsilon=self.layernorm_eps)
     self.mlp = MlpBlock(hidden_size=self.hidden_size,
                         ffn_hidden_size=self.ffn_hidden_size,)
-    self.projection = DenseLayer(
-        self.hidden_size, **ext_kwargs)
-    self.qkv_projection = DenseLayer(
-        3 * self.hidden_size, **ext_kwargs)
+    self.projection = DenseLayer(self.hidden_size)
+    self.qkv_projection = DenseLayer(3 * self.hidden_size)
 
   def __call__(self, inputs):
     res = inputs
@@ -268,7 +270,7 @@ def step_fn(model, train_state, input_batch):
 
 
 batch_size = 4
-epochs = 50
+epochs = 20
 
 hidden_size = 4096 * model_size_scale
 ffn_hidden_size = 16384 * model_size_scale
@@ -314,11 +316,11 @@ def run(use_quant: bool, tb_label: str):
       train_state, train_loss = train_step(train_state, input_batch)
       # For debugging only, otherwise it slows down training
       with summary_writer.as_default(step=step):
-        if train_state.qscale:
-          # print(f'epoch={epoch_i}, step={i}, train_state.qscale={train_state.qscale}')
+#        if train_state.qscale:
+#          print(f'epoch={epoch_i}, step={i}, train_state.qscale={train_state.qscale}')
           # Monitor quantization scales
-          for k, v in flatten_dict(train_state.qscale).items():
-            tf.summary.scalar('/'.join(k), v)
+        #  for k, v in flatten_dict(train_state.qscale).items():
+        #    tf.summary.scalar('/'.join(k), v)
         tf.summary.scalar('train_loss', train_loss)
       step += 1
     eval_input_batch = {'x': x_eval, 'y': y_eval}
