@@ -5,9 +5,9 @@
 #define EIGEN_USE_GPU
 
 #if GOOGLE_CUDA
-
-#include "third_party/gpus/cuda/include/cuda.h"
+#include <cuda.h>
 #endif
+
 #include "fused_instance_norm_op.h"
 #include "norm_util.h"
 #include "tensorflow/core/kernels/gpu_prim.h"

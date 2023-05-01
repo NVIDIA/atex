@@ -1,7 +1,7 @@
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 # ==============================================================================
 import argparse
-import nv_norms
+from atex import nv_norms
 import tensorflow as tf
 import time
 

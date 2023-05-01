@@ -80,7 +80,7 @@ import tensorflow as tf
 from tensorflow.keras import layers, optimizers, models
 
 # ASP Step 1: Import the sparsity optimizer
-import tf_asp
+from atex.structured_sparsity import tf_asp
 
 tf.get_logger().setLevel(tf_asp.SHOW_PERMUTATION_INFO)
 

@@ -1,6 +1,7 @@
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 
 
+import os
 import numpy as np
 import time
 import ctypes
@@ -37,7 +38,9 @@ def use_gpu(initial_override = True):
         gpus_tested = True
         
         if gpus_found > 0:
-            E = ctypes.cdll.LoadLibrary("kernels/structured_sparsity.so")
+            E = ctypes.cdll.LoadLibrary(
+                os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                "../../../libstructured_sparsity.so"))
 
         print(f"Found {gpus_found} gpus and kernels in {E}")
 

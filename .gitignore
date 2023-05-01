@@ -7,3 +7,5 @@ __pycache__/
 **/*.nsys-rep
 .vscode/
 structured_sparsity/exported_model/
+build/
+*.egg-info/

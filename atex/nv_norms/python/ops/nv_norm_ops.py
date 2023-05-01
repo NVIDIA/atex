@@ -7,6 +7,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import os
 import tensorflow as tf
 import tensorflow_addons as tfa
 
@@ -16,7 +17,8 @@ from tensorflow.python.platform import resource_loader
 
 
 norm_ops = load_library.load_op_library(
-    resource_loader.get_path_to_datafile('_fused_nv_norm_ops.so'))
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 "../../../../_fused_nv_norm_ops.so"))
 fused_instance_norm_op = norm_ops.fused_instance_norm
 fused_instance_norm_grad_op = norm_ops.fused_instance_norm_grad
 fused_layer_norm_op = norm_ops.fused_layer_norm

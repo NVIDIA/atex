@@ -6,7 +6,7 @@ import numpy as np
 import os
 import tempfile
 import tensorflow as tf
-import tf_asp
+from atex.structured_sparsity import tf_asp
 import shutil
 
 from tensorflow.keras import layers, optimizers

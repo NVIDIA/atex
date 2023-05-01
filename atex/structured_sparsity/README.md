@@ -39,7 +39,7 @@ users might experience a terrible slowdown!
 ### Step-1: Importing TF-ASP
 
 ```python
-import tf_asp
+from atex.structured_sparsity import tf_asp
 ```
 
 ### Step-2: Initializing TF-ASP

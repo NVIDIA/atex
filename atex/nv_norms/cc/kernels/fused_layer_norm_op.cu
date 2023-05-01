@@ -5,7 +5,7 @@
 #define EIGEN_USE_GPU
 
 #if GOOGLE_CUDA
-#include "third_party/gpus/cuda/include/cuda.h"
+#include <cuda.h>
 #endif
 
 #include "fused_layer_norm_op.h"

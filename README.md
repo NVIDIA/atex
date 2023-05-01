@@ -28,6 +28,15 @@ to benefit from the sparse Tensor Cores (available from Ampere GPUs) to achieve
 faster inference speed after deployment. More in
 [structured_sparsity](./structured_sparsity/).
 
+
+## Installation from source
+
+To build this package from source, run the following command in the root directory of this package.
+
+```
+pip install .
+```
+
 ## Contribution guidelines
 
 Please review the [Contribution Guidelines](CONTRIBUTING.md). 
