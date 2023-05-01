@@ -140,7 +140,7 @@ int set_up_check_permutation_memory(
   return fresh_alloc;
 }
 
-int run_check_permutations(
+extern "C" int run_check_permutations(
     float* matrix, unsigned int rows, unsigned int cols,
     unsigned int* stripe_groups, unsigned int group_width,
     unsigned int num_groups  // groups of stripes, group_width = stripes per
@@ -275,7 +275,7 @@ int set_up_sum_after_2_to_4_memory(float** dmatrix, unsigned int rows,
   return fresh_allocation;
 }
 
-int run_subset_sum_after_2_to_4(float* matrix, unsigned int rows,
+extern "C" int run_subset_sum_after_2_to_4(float* matrix, unsigned int rows,
                                 unsigned int cols, unsigned int start_col,
                                 unsigned int end_col, unsigned int blocks,
                                 unsigned int threads, float* output) {

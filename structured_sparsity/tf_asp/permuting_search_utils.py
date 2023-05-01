@@ -75,14 +75,15 @@ def sum_after_2_to_4(matrix):
         matrix_view = np.copy(matrix).flatten()
         blocks = max(int(matrix.shape[1]/4/2), 1)
         threads = min(max(math.ceil(matrix.shape[0]/4), 1), 1024)
-        result = E._Z27run_subset_sum_after_2_to_4PfjjjjjjS_(ctypes.c_void_p(matrix_view.ctypes.data),
-                                      ctypes.c_uint(matrix.shape[0]),
-                                      ctypes.c_uint(matrix.shape[1]),
-                                      ctypes.c_uint(0),
-                                      ctypes.c_uint(matrix.shape[1]),
-                                      ctypes.c_uint(blocks),
-                                      ctypes.c_uint(threads),
-                                      ctypes.c_void_p(cuda_sum.ctypes.data))
+        result = E.run_subset_sum_after_2_to_4(ctypes.c_void_p(matrix_view.ctypes.data),
+                                               ctypes.c_uint(matrix.shape[0]),
+                                               ctypes.c_uint(matrix.shape[1]),
+                                               ctypes.c_uint(0),
+                                               ctypes.c_uint(matrix.shape[1]),
+                                               ctypes.c_uint(blocks),
+                                               ctypes.c_uint(threads),
+                                               ctypes.c_void_p(cuda_sum.ctypes.data)
+        )
         cuda_elapsed = time.perf_counter() - start_time
         cur_sum = cuda_sum[0]
     return cur_sum
@@ -131,18 +132,18 @@ def try_permutations_on_matrix(matrix, permutations):
     threads = 32
     improvement = np.zeros((1), dtype=np.float32)
     permutation = np.zeros((1), dtype=np.uint32)
-    result = E._Z22run_check_permutationsPfjjPjjjS0_jS_S0_jj(ctypes.c_void_p(matrix_view.ctypes.data),  # matrix
-                                                             ctypes.c_uint(matrix.shape[0]),            # rows
-                                                             ctypes.c_uint(matrix.shape[1]),            # cols
-                                                             ctypes.c_void_p(stripe_groups_view.ctypes.data),# stripe groups
-                                                             ctypes.c_uint(len(stripe_groups[0])),      # group width
-                                                             ctypes.c_uint(len(stripe_groups)),         # num groups
-                                                             ctypes.c_void_p(permutations_view.ctypes.data), # permutations
-                                                             ctypes.c_uint(len(permutations)),          # num permutations
-                                                             ctypes.c_void_p(improvement.ctypes.data),  # improvement
-                                                             ctypes.c_void_p(permutation.ctypes.data),  # winning permutation index
-                                                             ctypes.c_uint(blocks),
-                                                             ctypes.c_uint(threads))
+    result = E.run_check_permutations(ctypes.c_void_p(matrix_view.ctypes.data),  # matrix
+                                      ctypes.c_uint(matrix.shape[0]),            # rows
+                                      ctypes.c_uint(matrix.shape[1]),            # cols
+                                      ctypes.c_void_p(stripe_groups_view.ctypes.data),# stripe groups
+                                      ctypes.c_uint(len(stripe_groups[0])),      # group width
+                                      ctypes.c_uint(len(stripe_groups)),         # num groups
+                                      ctypes.c_void_p(permutations_view.ctypes.data), # permutations
+                                      ctypes.c_uint(len(permutations)),          # num permutations
+                                      ctypes.c_void_p(improvement.ctypes.data),  # improvement
+                                      ctypes.c_void_p(permutation.ctypes.data),  # winning permutation index
+                                      ctypes.c_uint(blocks),
+                                      ctypes.c_uint(threads))
     return improvement[0], permutations[permutation[0]]
     
 
