@@ -76,7 +76,7 @@ class Dense(tf.keras.layers.Dense):
     Args:
       units: Positive integer, dimensionality of the output space.
       amax_history_length: Positive integer, The length of the amax history
-        window used for scaling factor computation.
+        window used for scaling factor computation. Default is 1024.
       activation: Activation function to use.
         If you don't specify anything, no activation is applied
         (ie. "linear" activation: `a(x) = x`).
@@ -104,7 +104,7 @@ class Dense(tf.keras.layers.Dense):
     def __init__(
         self,
         units,
-        amax_history_length=16,
+        amax_history_length=1024,
         **kwargs,
     ):
       super().__init__(units, **kwargs)

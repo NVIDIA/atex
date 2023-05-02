@@ -10,10 +10,10 @@ from fp8layers.tensorflow import Dense
 
 dropout_rate = 0.0
 
-parser = argparse.ArgumentParser(description='Show a basic transformer layer')
+parser = argparse.ArgumentParser(description='Benchmark a basic encoder layer')
 parser.add_argument('--fp8', action='store_true', help='Enable fp8')
 parser.add_argument('--mixed', action='store_true',
-                    help='Enable mixed precision')
+                    help='Enable mixed precision and fp16 compute type')
 args = parser.parse_args()
 
 use_fp8 = args.fp8
@@ -125,7 +125,7 @@ class BasicTransformer(tf.keras.Model):
       hidden_size: int,
       ffn_hidden_size: int,
       num_attention_heads: int,
-      layernorm_eps: int = 1e-5,
+      layernorm_eps: float = 1e-5,
       attention_dropout: float = 0.1,
       hidden_dropout: float = 0.1,
   ):
@@ -181,7 +181,6 @@ batch_size = 4
 ffn_hidden_size = 16384
 num_attention_heads = 32
 
-opt = tf.keras.optimizers.experimental.SGD(learning_rate=0.0000001)
 def speedometer(
     model: tf.keras.Model,
     inputs: tf.Tensor,

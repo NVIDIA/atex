@@ -29,7 +29,7 @@ Collection = Union[Dict, FrozenDict]
 
 class FP8Helper:
   FP8_COLLECTION_NAME: str = "fp8_params"
-  DEFAULT_COLLECTION_NAME: str = "params"
+
   @staticmethod
   def update_fp8_params(state: Collection, grads: Collection) -> Collection:
     """
@@ -57,6 +57,7 @@ class TrainState(struct.PyTreeNode):
     opt_state: The state for `tx`.
   """
   step: int
+  apply_fn: Callable = struct.field(pytree_node=False)
   params: core.FrozenDict[str, Any] = struct.field(pytree_node=True)
   tx: optax.GradientTransformation = struct.field(pytree_node=False)
   opt_state: optax.OptState = struct.field(pytree_node=True)
@@ -78,12 +79,13 @@ class TrainState(struct.PyTreeNode):
     )
 
   @classmethod
-  def create(cls, *, params, tx, **kwargs):
+  def create(cls, *, apply_fn, params, tx, **kwargs):
     """Creates a new instance with `step=0` and initialized `opt_state`."""
     others, _ = params.pop(FP8Helper.FP8_COLLECTION_NAME)
     opt_state = tx.init(others)
     return cls(
         step=0,
+        apply_fn=apply_fn,
         params=params,
         tx=tx,
         opt_state=opt_state,
@@ -213,30 +215,34 @@ class DenseGeneral(nn.Module):
     kernel_shape = tuple([inputs.shape[ax] for ax in axis]) + features
     kernel_param_shape = (np.prod([inputs.shape[ax] for ax in axis]),
                           np.prod(features))
-    kernel = self.param(
-        'kernel', 
-        spmd.with_logical_partitioning(self.kernel_init, self.kernel_axes),
-        kernel_param_shape, self.param_dtype)
+
+    kernel = param_with_axes(
+        'kernel',
+        self.kernel_init,
+        kernel_param_shape,
+        self.param_dtype,
+        axes=self.kernel_axes)
     kernel = jnp.asarray(kernel, self.dtype)
 
     if self.use_bias:
-      bias = self.param(
-          'bias', 
-          spmd.with_logical_partitioning(self.bias_init, self.bias_axes),
-          (np.prod(features),), self.param_dtype)
+      bias = param_with_axes(
+          'bias',
+          self.bias_init,
+          (np.prod(features),),
+          self.param_dtype,
+          axes=self.bias_axes)
       bias = jnp.asarray(bias, self.dtype)
     else:
       bias = None
 
-    # The rank has to be larger than rank 0 for the partition.
     scale_args = (
-        nn.with_partitioning(nn.initializers.ones_init(), (None,)),
+        nn.initializers.ones_init(),
         jax.random.PRNGKey(0),
         (1,),
         jnp.float32,
     )
     amax_history_args = (
-        nn.with_partitioning(nn.initializers.zeros_init(), (None,)),
+        nn.initializers.zeros_init(),
         jax.random.PRNGKey(0),
         (self.amax_history_length,),
         jnp.float32,
@@ -287,7 +293,7 @@ class DenseGeneral(nn.Module):
       out = self.activation(out)
 
     # Reshape back the outputs.
-    out = jnp.reshape(out, (*original_shape[0:-1], out.shape[-1]))
+    out = jnp.reshape(out, (*original_shape[0:-len(axis)], out.shape[-1]))
   
     return out
 

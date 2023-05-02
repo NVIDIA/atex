@@ -110,8 +110,8 @@ class DenseTest(jtu.JaxTestCase):
     dw = grads[0]['params']['kernel']
     dx = grads[1]
 
-    self.assertAllClose(dw_ref, dw.value, atol=0.05, rtol=0.01)
-    self.assertAllClose(db_ref, db.value, atol=0.05, rtol=0.01)
+    self.assertAllClose(dw_ref, dw, atol=0.05, rtol=0.01)
+    self.assertAllClose(db_ref, db, atol=0.05, rtol=0.01)
     self.assertAllClose(dx_ref, dx, atol=0.05, rtol=0.01)
 
   def testDenseBwdHlo(self):
@@ -428,7 +428,7 @@ class DenseTest(jtu.JaxTestCase):
     variables = dense.init(key, x)
 
     opt = optax.adam(learning_rate=.1)
-    state = TrainState.create(params=variables, tx=opt)
+    state = TrainState.create(params=variables, tx=opt, apply_fn=None)
 
     def _train_loss(variables, x, dy):
       y = dense.apply(variables, x)
@@ -455,7 +455,7 @@ class DenseTest(jtu.JaxTestCase):
       amax_history_x = roll_and_update(amax_history_x, jnp.max(jnp.abs(x)))
       amax_history_k = roll_and_update(
           amax_history_k,
-          jnp.max(jnp.abs(state.params['params']['kernel'].value)))
+          jnp.max(jnp.abs(state.params['params']['kernel'])))
       amax_history_dy = roll_and_update(amax_history_dy, jnp.max(jnp.abs(dy)))
 
       amax_from_history_x = jnp.max(amax_history_x, axis=0)
@@ -469,16 +469,16 @@ class DenseTest(jtu.JaxTestCase):
 
       rtol, atol = 0.001, 0.001
       fp8_vars = state.params[FP8Helper.FP8_COLLECTION_NAME]
-      self.assertAllClose(fp8_vars['input_amax_history'].value, amax_history_x,
+      self.assertAllClose(fp8_vars['input_amax_history'], amax_history_x,
                           rtol=rtol, atol=atol)
-      self.assertAllClose(fp8_vars['kernel_amax_history'].value, amax_history_k,
+      self.assertAllClose(fp8_vars['kernel_amax_history'], amax_history_k,
                           rtol=rtol, atol=atol)
-      self.assertAllClose(fp8_vars['output_grad_amax_history'].value,
+      self.assertAllClose(fp8_vars['output_grad_amax_history'],
                           amax_history_dy, rtol=rtol, atol=atol)
 
-      self.assertAllClose(1. / fp8_vars['input_scale'].value[0], scale_x)
-      self.assertAllClose(1. / fp8_vars['kernel_scale'].value[0], scale_k)
-      self.assertAllClose(1. / fp8_vars['output_grad_scale'].value[0], scale_dy)
+      self.assertAllClose(1. / fp8_vars['input_scale'][0], scale_x)
+      self.assertAllClose(1. / fp8_vars['kernel_scale'][0], scale_k)
+      self.assertAllClose(1. / fp8_vars['output_grad_scale'][0], scale_dy)
 
 
 if __name__ == '__main__':

@@ -42,6 +42,15 @@ jnp.float8_e5m2
 The FP8 datatypes in JAX and TensorFlow can only be created by down-casting from
 a wider type. The example below demonstrates how to do this:
 
+
+<table>
+<tr>
+<td>TensorFlow</td><td>JAX</td>
+</tr>
+
+<tr>
+<td>
+
 ```python
 import tensorflow as tf
 from tensorflow.python.framework import dtypes
@@ -56,6 +65,28 @@ a_fp8 = tf.cast(a, f8e4m3)
 print(a_fp8)
 # tf.Tensor([1.25 2.25 3.5], shape=(3,), dtype=float8_e4m3fn)
 ```
+
+</td>
+<td>
+
+```python
+import jax.numpy as jnp
+f8e4m3 = jnp.float8_e4m3fn
+
+a = jnp.array([1.2345678, 2.3456789, 3.4567891], dtype=jnp.float16)
+print(a)
+# [1.234 2.346 3.457]
+
+# You can generate FP8 data by downcasting.
+a_fp8 = a.astype(f8e4m3)
+print(a_fp8)
+# [1.25 2.25 3.5]
+```
+
+</td>
+</tr>
+</table>
+
 
 Due to the limited range of the FP8 datatypes, you will need to scale the
 higher-precision data to keep it below the upper bound of what FP8 can represent
@@ -89,6 +120,14 @@ fundamental concept that you will need to equip arbitrary models with FP8.
 Let's put all of the above ideas into practice and carry out a
 matrix-multiplication in FP8:
 
+<table>
+<tr>
+<td>TensorFlow</td><td>JAX</td>
+</tr>
+
+<tr>
+<td>
+
 ```python
 import tensorflow as tf
 from tensorflow.python.framework import dtypes
@@ -120,6 +159,46 @@ c = matmul_fp8(a_fp8, a_scale, b_fp8, b_scale)
 print(c)
 ```
 
+</td>
+<td>
+
+```python
+import jax
+import jax.numpy as jnp
+f8e4m3 = jnp.float8_e4m3fn
+E4M3_max = jnp.finfo(f8e4m3).max.astype(jnp.float16)
+
+# Create or load the wide-type data.
+key = jax.random.PRNGKey(42)
+a = jax.random.uniform(key, (16, 64), dtype=jnp.float16)
+b = jax.random.uniform(key, (64, 16), dtype=jnp.float16)
+
+# Calculate the scaling factors, which are always stored in wider types.
+a_scale = jnp.max(jnp.abs(a)) / E4M3_max
+b_scale = jnp.max(jnp.abs(b)) / E4M3_max
+
+# Convert to FP8.
+a_fp8 = (a / a_scale).astype(f8e4m3)
+b_fp8 = (b / b_scale).astype(f8e4m3)
+
+# JIT your model, which takes-in both the FP8 data along with scaling factors.
+@jax.jit
+def matmul_fp8(a_fp8, a_scale, b_fp8, b_scale):
+    # Up-cast from FP8 to a wider type.
+    a = a_fp8.astype(jnp.float16) * a_scale
+    b = b_fp8.astype(jnp.float16) * b_scale
+    c = jax.lax.dot(a, b) # Result in FP16.
+    return c
+
+c = matmul_fp8(a_fp8, a_scale, b_fp8, b_scale)
+print(c)
+
+```
+
+</td>
+</tr>
+</table>
+
 The `matmul_fp8` function takes two tensors in FP8 and two scaling factors in
 FP32 as scalars. It then seemingly first upcasts the tensors to the FP16 types
 and multiplies by the scaling factors before calling the `tf.matmul` operation.
@@ -141,6 +220,14 @@ a_scale` without apriori knowledge of `a_scale`? Assuming the data fluctuation
 from one training step to the next is not wildly different, we can use the
 `amax` as computed by the previous training step in the current training step.
 Employing this delayed-scaling recipe would simplify the above code as follows:
+
+<table>
+<tr>
+<td>TensorFlow</td><td>JAX</td>
+</tr>
+
+<tr>
+<td>
 
 ```python
 # Create or load the wide-type data.
@@ -188,6 +275,61 @@ print(c_fp8)
 print(c_scale)
 ```
 
+</td>
+<td>
+
+```python
+# Create or load the wide-type data.
+key = jax.random.PRNGKey(42)
+a = jax.random.uniform(key, (16, 64), dtype=jnp.float16)
+b = jax.random.uniform(key, (64, 16), dtype=jnp.float16)
+
+# Begin with factors of unity. The factors need to have the same type as the
+# wide-type data. The first few training steps will warm up and adjust the
+# scaling factors.
+a_scale = 1.
+b_scale = 1.
+c_scale = 1.
+
+# Convert to FP8.
+a_fp8 = a.astype(f8e4m3)
+b_fp8 = b.astype(f8e4m3)
+
+# JIT your model, which takes-in both the FP8 data along with scaling factors.
+# Note that we now also pass the (delayed) scaling factor for the output.
+@jax.jit
+def matmul_fp8(a_fp8, a_scale, b_fp8, b_scale, c_scale):
+    # Up-cast from FP8 to a wider type.
+    a = a_fp8.astype(jnp.float16) * a_scale
+    b = b_fp8.astype(jnp.float16) * b_scale
+
+    # Call the GEMM operation.
+    c = jax.lax.dot(a, b)
+
+    # Quantize the output. These steps need to be followed exactly.
+    # We clip before casting to ensure proper saturation and protect against
+    # overflow.
+    saturated_c = jnp.clip(c / c_scale.astype(jnp.float16), -E4M3_max,
+                           E4M3_max)
+    c_fp8 = saturated_c.astype(f8e4m3)
+    new_c_scale = jnp.max(jnp.abs(c)).astype(jnp.float16) / E4M3_max
+    
+    # Return the new scaling factors along with the results.
+    # The new scaling factors will be used in the next training step.
+    return c_fp8, new_c_scale
+
+for step in training_steps:
+  a_fp8, a_scale, b_fp8, b_scale = other_computation(...)
+  c_fp8, c_scale = matmul_fp8(a_fp8, a_scale, b_fp8, b_scale, c_scale)
+
+print(c_fp8)
+print(c_scale)
+```
+
+</td>
+</tr>
+</table>
+
 In the above example, the XLA compiler will recognize the entirety of the
 pattern and 
 - Elide the upcasting and scaling prior to the matmul like in the previous
@@ -212,11 +354,13 @@ scaling purposes. When a new `amax` is computed, we will roll out the oldest
 first-in first-out (FIFO) ring buffer fashion.
 
 For the details of how to implement full-fledged FP8 JAX layers in ~100 lines
-of code, see [DenseFp8.py](JAX/DenseFp8.py) or
+of code, see [dense.py](fp8layers/jax/fp8_module/dense.py) or
 [dense.py](fp8layers/tensorflow/fp8_module/dense.py) for the case of TensorFlow.
 The included Python library has incorporated all of the above concepts and can
 be used as a guide for developing even more complex FP8 pipelines in addition to
-being used as a functioning library.
+being used as a functioning library. Note, JAX still needs some attention from
+users to update the FP8 parameters and more in
+[here](https://gitlab-master.nvidia.com/kaixih/xla-fp8-layers#updating-the-fp8-parameters).
 
 ## FP8 Fusions
 We have also added support for various FP8 fusions, such as GEMM + Bias (vector
