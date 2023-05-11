@@ -20,22 +20,6 @@ To compile the dependencies of the code base, users need to follow the step-0
 before begining to modify their model scripts. Then, only three steps are needed
 to use the TF-ASP feature.
 
-### Step-0: Preparing Dynamic Library
-
-The permutation option requires multiple special CUDA kernels to accelerate the
-permutation sequence searching. Users need to manually compile the code
-[here](./kernels/structured_sparsity.cu) as:
-
-```bash
-$ cd kernels
-$ nvcc structured_sparsity.cu -Xcompiler -fPIC -shared -o structured_sparsity.so
-```
-
-Then, the `structured_sparsity.so` needs to stay in `<working_dir>/kernels`.  It
-is also possible to switch to the CPU solution by `search_device='CPU'`, whereby
-users might experience a terrible slowdown!
-
-
 ### Step-1: Importing TF-ASP
 
 ```python

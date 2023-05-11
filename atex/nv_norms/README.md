@@ -26,21 +26,6 @@ ops when operating with the `float` or `half` data types.
 
 ## Usage
 
-### Install
-We are going to build the `nv_norms` inside a NGC Tensorflow Docker container.
-We create a bash script `setup.sh` to facilitate the installation and a sanity
-check. Then, the built PIP package is located in `artifacts/` and we can install
-it as:
-
-```bash
-# bash setup.sh
-<...> === Output wheel file is in: <...>/nv_ops/artifacts
-
-# pip install artifacts/*.whl
-<...>
-Successfully installed tensorflow-nv-norms-0.0.2
-```
-
 ### Benchmark
 Here is a simple benchmark script to compare the performance of
 `tf.keras.layers.LayerNormalization` and our fused layer norm.

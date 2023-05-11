@@ -17,7 +17,7 @@ many ops, such as Mul, Add, etc., to compute the stats and then scale/offset the
 results. In contrast, the NVIDIA fused implementation provided in `nv_norms`
 compute the norms in a single operation, eliminating many expensive round-trips
 to device memory and significantly improving performance. More in
-[nv_ops](./nv_ops/).
+[nv_norms](./atex/nv_norms/).
 
 ### 2. Structured Sparsity
 
@@ -26,7 +26,7 @@ for the NVIDIA Ampere GPU architecture. We only need users to add a couple lines
 to their python script and then the pretrained model can be automatically pruned
 to benefit from the sparse Tensor Cores (available from Ampere GPUs) to achieve
 faster inference speed after deployment. More in
-[structured_sparsity](./structured_sparsity/).
+[structured_sparsity](./atex/structured_sparsity/).
 
 
 ## Installation from source
