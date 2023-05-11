@@ -11,7 +11,7 @@ from distutils.version import LooseVersion
 from setuptools import setup, find_packages, Extension
 from setuptools.command.build_ext import build_ext
 
-__version__ = '0.0.2'
+__version__ = '0.0.6'
 REQUIRED_PACKAGES = [
     'tensorflow >= 2.1.0',
 ]
