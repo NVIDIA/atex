@@ -13,8 +13,8 @@ import tensorflow as tf
 from tensorflow.python.framework import test_util
 from tensorflow.python.platform import test
 
-from nv_norms import fused_layer_norm_op, fused_layer_norm_grad_op
-from nv_norms import LayerNormalization
+from atex.nv_norms import fused_layer_norm_op, fused_layer_norm_grad_op
+from atex.nv_norms import LayerNormalization
 
 
 def layer_norm_grad_np(x, dy, gamma, cache, axis):

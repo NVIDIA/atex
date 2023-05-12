@@ -14,8 +14,8 @@ import tensorflow_addons as tfa
 from tensorflow.python.framework import test_util
 from tensorflow.python.platform import test
 
-from nv_norms import InstanceNormalization
-from nv_norms import fused_instance_norm_op, fused_instance_norm_grad_op
+from atex.nv_norms import InstanceNormalization
+from atex.nv_norms import fused_instance_norm_op, fused_instance_norm_grad_op
 
 
 def instance_norm_grad_np(x, dy, gamma, cache, is_channel_first):
