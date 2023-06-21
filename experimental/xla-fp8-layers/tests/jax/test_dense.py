@@ -20,7 +20,7 @@ from flax import linen as nn
 from flax.traverse_util import flatten_dict
 from flax.traverse_util import unflatten_dict
 
-from fp8layers.jax import DenseGeneral, FP8Helper, TrainState
+from fp8layers.jax import DenseGeneral, TrainState
 
 def roll_and_update(amax_h, update):
   return jnp.roll(amax_h, shift=-1, axis=0).at[0].set(update)
@@ -113,6 +113,32 @@ class DenseTest(jtu.JaxTestCase):
     self.assertAllClose(dw_ref, dw, atol=0.05, rtol=0.01)
     self.assertAllClose(db_ref, db, atol=0.05, rtol=0.01)
     self.assertAllClose(dx_ref, dx, atol=0.05, rtol=0.01)
+
+  def testDenseShape(self):
+    x = random.uniform(random.PRNGKey(1), (4, 8, 8, 16))
+    init = nn.initializers.uniform(1.)
+
+    dense_kwargs = {
+        "features": [16, 4],
+        "axis": [-2, -1],
+        "use_bias": True,
+        "kernel_init": init,
+        "bias_init": init,
+        "dtype": jnp.bfloat16,
+    }
+
+    dense = DenseGeneral(**dense_kwargs)
+    
+    key = random.PRNGKey(0)
+    variables = dense.init(key, x)
+
+    def _infer(model, variables, x):
+      y = model.apply(variables, x)
+      return y
+
+    infer_fn = jax.jit(partial(_infer, dense))
+    y = infer_fn(variables, x)
+    self.assertEqual(y.shape, (4, 8, 16, 4))
 
   def testDenseBwdHlo(self):
     in_dtype = jnp.float32
@@ -428,7 +454,7 @@ class DenseTest(jtu.JaxTestCase):
     variables = dense.init(key, x)
 
     opt = optax.adam(learning_rate=.1)
-    state = TrainState.create(params=variables, tx=opt, apply_fn=None)
+    state = TrainState.create(model_variables=variables, tx=opt, apply_fn=None)
 
     def _train_loss(variables, x, dy):
       y = dense.apply(variables, x)
@@ -450,12 +476,11 @@ class DenseTest(jtu.JaxTestCase):
       x = random.normal(random.PRNGKey(1), (16, 16), dtype=jnp.float32)
       dy = random.normal(random.PRNGKey(1), (16, 32), dtype=jnp.float32)
 
-      loss_val, grads = train_fn(state.params, x, dy)
+      loss_val, grads = train_fn(state.variables(), x, dy)
 
       amax_history_x = roll_and_update(amax_history_x, jnp.max(jnp.abs(x)))
       amax_history_k = roll_and_update(
-          amax_history_k,
-          jnp.max(jnp.abs(state.params['params']['kernel'])))
+          amax_history_k, jnp.max(jnp.abs(state.params['kernel'])))
       amax_history_dy = roll_and_update(amax_history_dy, jnp.max(jnp.abs(dy)))
 
       amax_from_history_x = jnp.max(amax_history_x, axis=0)
@@ -468,17 +493,18 @@ class DenseTest(jtu.JaxTestCase):
       state = state.apply_gradients(grads=grads[0])
 
       rtol, atol = 0.001, 0.001
-      fp8_vars = state.params[FP8Helper.FP8_COLLECTION_NAME]
-      self.assertAllClose(fp8_vars['input_amax_history'], amax_history_x,
-                          rtol=rtol, atol=atol)
-      self.assertAllClose(fp8_vars['kernel_amax_history'], amax_history_k,
-                          rtol=rtol, atol=atol)
-      self.assertAllClose(fp8_vars['output_grad_amax_history'],
+      fp8_vars = state.fp8_params
+      self.assertAllClose(fp8_vars['input_amax_history_fp8_meta'],
+                          amax_history_x, rtol=rtol, atol=atol)
+      self.assertAllClose(fp8_vars['kernel_amax_history_fp8_meta'],
+                          amax_history_k, rtol=rtol, atol=atol)
+      self.assertAllClose(fp8_vars['output_grad_amax_history_fp8_meta'],
                           amax_history_dy, rtol=rtol, atol=atol)
 
-      self.assertAllClose(1. / fp8_vars['input_scale'][0], scale_x)
-      self.assertAllClose(1. / fp8_vars['kernel_scale'][0], scale_k)
-      self.assertAllClose(1. / fp8_vars['output_grad_scale'][0], scale_dy)
+      self.assertAllClose(1. / fp8_vars['input_scale_fp8_meta'][0], scale_x)
+      self.assertAllClose(1. / fp8_vars['kernel_scale_fp8_meta'][0], scale_k)
+      self.assertAllClose(
+          1. / fp8_vars['output_grad_scale_fp8_meta'][0], scale_dy)
 
 
 if __name__ == '__main__':

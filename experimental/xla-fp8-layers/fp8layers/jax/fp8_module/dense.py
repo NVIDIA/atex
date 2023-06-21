@@ -1,18 +1,18 @@
-from functools import partial
 from typing import Callable, Iterable, Optional, Dict, Union, Any, Tuple
 
-import jax
-import jax.numpy as jnp
 import numpy as np
 import optax
 
 from flax import core
 from flax import linen as nn
+from flax import traverse_util
 from flax import struct
 from flax.core.frozen_dict import FrozenDict
 from flax.linen import partitioning as nn_partitioning
-from flax.linen import spmd
 from jax import lax
+from jax import numpy as jnp
+
+from .fp8 import in_qdq, out_qdq
 
 # from flax.linen.partitioning import param_with_axes, with_sharding_constraint
 param_with_axes = nn_partitioning.param_with_axes
@@ -27,69 +27,98 @@ ActivationFn = Callable[..., Array]
 DotGeneralT = Callable[..., Array]
 Collection = Union[Dict, FrozenDict]
 
-class FP8Helper:
-  FP8_COLLECTION_NAME: str = "fp8_params"
+def _validate_params_axes(params_axes, params):
+  axis_names = nn_partitioning.get_axis_names(params_axes)
+  missing_params_axes = (
+      set(traverse_util.flatten_dict(params, sep='/')) -
+      set(traverse_util.flatten_dict(axis_names, sep='/')))
+  if missing_params_axes:
+    raise ValueError(
+        f'Missing axis names for parameters: {missing_params_axes}')
 
-  @staticmethod
-  def update_fp8_params(state: Collection, grads: Collection) -> Collection:
-    """
-    Update the FP8 params
-    """
-    if FP8Helper.FP8_COLLECTION_NAME in state:
-      if not isinstance(state, FrozenDict):
-        state = FrozenDict(state)
-      others, fp8_params = state.pop(FP8Helper.FP8_COLLECTION_NAME)
-      new_fp8_params = grads[FP8Helper.FP8_COLLECTION_NAME]
-      return FrozenDict({**others,
-                         FP8Helper.FP8_COLLECTION_NAME : new_fp8_params})
-    return state
+def _split_fp8_and_others(params):
+  flt_fp8 = {}
+  flt_other = {}
+  flt_params = traverse_util.flatten_dict(params, sep='/')
+  for k, v in flt_params.items():
+    if k.endswith('_fp8_meta'):
+      flt_fp8[k] = v
+    else:
+      flt_other[k] = v
+  fp8_params = traverse_util.unflatten_dict(flt_fp8, sep='/')
+  other_params = traverse_util.unflatten_dict(flt_other, sep='/')
+  return core.freeze(fp8_params), core.freeze(other_params)
+
+def _merge_fp8_and_others(fp8_params, others):
+  flt_fp8 = traverse_util.flatten_dict(fp8_params, sep='/')
+  flt_other = traverse_util.flatten_dict(others, sep='/')
+  flt_params = {**flt_fp8, **flt_other}
+  return traverse_util.unflatten_dict(flt_params, sep='/')
 
 class TrainState(struct.PyTreeNode):
   """
   Args:
     step: Counter starts at 0 and is incremented by every call to
       `.apply_gradients()`.
-    params: The parameters contains two parts: "fp8_params" collections and
-      others. During the apply_gradients, parameters in the "fp8_params" will be
-      directly replaced by the corresponding grads; other parameters will be
-      updated by `tx`.
+    params: The params that will be updated by the `tx`.
+    fp8_params: The fp8_meta params that will be replaced by their grads.
     tx: An Optax gradient transformation.
     opt_state: The state for `tx`.
+    params_axes: Contains axis metadata (e.g., names) matching `params` tree.
   """
   step: int
   apply_fn: Callable = struct.field(pytree_node=False)
   params: core.FrozenDict[str, Any] = struct.field(pytree_node=True)
   tx: optax.GradientTransformation = struct.field(pytree_node=False)
   opt_state: optax.OptState = struct.field(pytree_node=True)
+  params_axes: core.FrozenDict[str, Any] = struct.field(pytree_node=True)
+  fp8_params: core.FrozenDict[str, Any] = struct.field(pytree_node=True)
+  
+  def variables(self) -> core.FrozenDict[str, Any]:
+    variables = {}
+    variables['params'] = _merge_fp8_and_others(self.fp8_params, self.params)
+    return core.freeze(variables)
 
   def apply_gradients(self, *, grads, **kwargs):
-    others_grads, fp8_grads = grads.pop(FP8Helper.FP8_COLLECTION_NAME)
-    others, _ = self.params.pop(FP8Helper.FP8_COLLECTION_NAME)
+    fp8_grads, other_grads = _split_fp8_and_others(grads['params'])
 
     updates, new_opt_state = self.tx.update(
-        others_grads, self.opt_state, others)
-    new_params = optax.apply_updates(others, updates)
+        other_grads, self.opt_state, self.params)
+    new_params = optax.apply_updates(self.params, updates)
 
     return self.replace(
         step=self.step + 1,
-        params=FrozenDict({**new_params,
-                           FP8Helper.FP8_COLLECTION_NAME : fp8_grads}),
+        params=new_params,
+        fp8_params=fp8_grads,
         opt_state=new_opt_state,
-        **kwargs,
     )
 
   @classmethod
-  def create(cls, *, apply_fn, params, tx, **kwargs):
+  def create(cls, apply_fn, model_variables, tx):
     """Creates a new instance with `step=0` and initialized `opt_state`."""
-    others, _ = params.pop(FP8Helper.FP8_COLLECTION_NAME)
-    opt_state = tx.init(others)
+    other_variables, params = core.pop(model_variables, 'params')
+    fp8_params, other_params = _split_fp8_and_others(params)
+
+    if 'params_axes' in other_variables:
+      other_variables, params_axes = core.pop(
+          other_variables, 'params_axes'
+      )
+      _validate_params_axes(params_axes, other_params)
+    else:
+      params_axes = None
+
+    if len(other_variables) > 0:
+      raise ValueError(f'Contains unknown variables: {other_variables.keys}')
+
+    opt_state = tx.init(other_params)
     return cls(
         step=0,
         apply_fn=apply_fn,
-        params=params,
+        params=other_params,
+        fp8_params=fp8_params,
         tx=tx,
         opt_state=opt_state,
-        **kwargs,
+        params_axes=params_axes,
     )
 
 def _normalize_axes(axes: Iterable[int], ndim: int) -> Tuple[int]:
@@ -101,90 +130,6 @@ def _canonicalize_tuple(x):
     return tuple(x)
   else:
     return (x,)
-
-def get_fp8_max(fp8_dtype):
-  assert fp8_dtype in (jnp.float8_e4m3fn, jnp.float8_e5m2)
-  return jnp.finfo(fp8_dtype).max.astype(jnp.float32)
-
-def quantize(x, q_dtype, scale, compute_dtype):
-  # We need to explicitly cast the max value to compute_dtype, otherwise the jax
-  # dtype promotion will cast the scaled_x to fp32 in the following ops, which
-  # would violate the fp8-matmul pattern matching.
-  dtype_max = get_fp8_max(q_dtype).astype(compute_dtype)
-
-  scaled_x = x / scale.astype(compute_dtype)
-  clipped_x = jnp.clip(scaled_x, -dtype_max, dtype_max)
-
-  return clipped_x.astype(q_dtype)
-
-def dequantize(x, dq_dtype, scale):
-  return x.astype(dq_dtype) * scale.astype(dq_dtype)
-
-def quantize_dequantize(x, q_dtype, scale, compute_dtype):
-  qx = quantize(x, q_dtype, scale, compute_dtype)
-  return dequantize(qx, x.dtype, scale)
-
-def compute_scale(amax, scale, fp8_max, margin=0):
-  """Default function to convert amax to scaling factor."""
-  exp = jnp.floor(jnp.log2(fp8_max / amax)) - margin
-  sf = jnp.round(lax.pow(2., jnp.abs(exp)))
-  sf = jnp.where(amax > 0.0, sf, scale)
-  sf = jnp.where(lax.is_finite(amax), sf, scale)
-  sf = jnp.where(exp < 0, 1.0 / sf, sf)
-  # The scaling factor we need equals to the notion of "scale_inv" in
-  # TransformerEngine. So, we convert the sf to its reciprocal.
-  return 1.0 / sf
-
-def compute_scale_and_amax_history(x, q_dtype, scale, amax_history):
-  dtype_max = get_fp8_max(q_dtype)
-
-  amax_update = jnp.max(jnp.abs(x)).astype(scale.dtype)
-  new_amax_history = \
-      jnp.roll(amax_history, shift=-1, axis=0).at[0].set(amax_update)
-
-  amax_from_history = jnp.max(new_amax_history, axis=0)
-  new_scale = compute_scale(amax_from_history, scale, dtype_max)
-  return new_scale, new_amax_history
-
-def qdq_and_return(x, q_dtype, scale, amax_history, compute_dtype):
-  qx = quantize_dequantize(x, q_dtype, scale, compute_dtype)
-  new_scale, new_amax_history = compute_scale_and_amax_history(
-      x, q_dtype, scale, amax_history)
-  return qx, new_scale, new_amax_history
-
-@partial(jax.custom_vjp, nondiff_argnums=(0,))
-def in_qdq(compute_dtype, inp, scale, amax_history):
-  qin, _, _ = qdq_and_return(
-      inp, jnp.float8_e4m3fn, scale, amax_history, compute_dtype)
-  return qin
-
-def in_qdq_fwd(compute_dtype, inp, scale, amax_history):
-  qin, new_scale, new_amax_history = qdq_and_return(
-      inp, jnp.float8_e4m3fn, scale, amax_history, compute_dtype)
-  return qin, (new_scale, new_amax_history)
-
-def in_qdq_bwd(compute_dtype, res, g):
-  new_scale, new_amax_history = res
-  q_g = g
-  return q_g, new_scale, new_amax_history
-
-in_qdq.defvjp(in_qdq_fwd, in_qdq_bwd)
-
-
-@partial(jax.custom_vjp, nondiff_argnums=(0,))
-def out_qdq(compute_dtype, out, scale, amax_history):
-  return out
-
-def out_qdq_fwd(compute_dtype, out, scale, amax_history):
-  return out, (scale, amax_history)
-
-def out_qdq_bwd(compute_dtype, res, g):
-  scale, amax_history = res
-  q_g, new_scale, new_amax_history = qdq_and_return(
-      g, jnp.float8_e5m2, scale, amax_history, compute_dtype)
-  return q_g, new_scale, new_amax_history
-  
-out_qdq.defvjp(out_qdq_fwd, out_qdq_bwd)
 
 class DenseGeneral(nn.Module):
   features: Union[Iterable[int], int]
@@ -237,49 +182,42 @@ class DenseGeneral(nn.Module):
 
     scale_args = (
         nn.initializers.ones_init(),
-        jax.random.PRNGKey(0),
         (1,),
         jnp.float32,
     )
     amax_history_args = (
         nn.initializers.zeros_init(),
-        jax.random.PRNGKey(0),
         (self.amax_history_length,),
         jnp.float32,
     )
 
-    input_amax_history = self.variable(
-        FP8Helper.FP8_COLLECTION_NAME, 'input_amax_history', *amax_history_args)
-    kernel_amax_history = self.variable(
-        FP8Helper.FP8_COLLECTION_NAME, 'kernel_amax_history',
-        *amax_history_args)
-    output_grad_amax_history = self.variable(
-        FP8Helper.FP8_COLLECTION_NAME, 'output_grad_amax_history',
-        *amax_history_args)
+    input_amax_history = self.param(
+        'input_amax_history_fp8_meta', *amax_history_args)
+    kernel_amax_history = self.param(
+        'kernel_amax_history_fp8_meta', *amax_history_args)
+    output_grad_amax_history = self.param(
+        'output_grad_amax_history_fp8_meta', *amax_history_args)
 
-    input_scale = self.variable(
-        FP8Helper.FP8_COLLECTION_NAME, 'input_scale', *scale_args)
-    kernel_scale = self.variable(
-        FP8Helper.FP8_COLLECTION_NAME, 'kernel_scale', *scale_args)
-    output_grad_scale = self.variable(
-        FP8Helper.FP8_COLLECTION_NAME, 'output_grad_scale', *scale_args)
+    input_scale = self.param('input_scale_fp8_meta', *scale_args)
+    kernel_scale = self.param('kernel_scale_fp8_meta', *scale_args)
+    output_grad_scale = self.param('output_grad_scale_fp8_meta', *scale_args)
 
     inputs, kernel, bias = nn.dtypes.promote_dtype(inputs, kernel, bias,
                                                    dtype=self.dtype)
 
     # Reshape the inputs to 2D matrix.
-    inp_mat = jnp.reshape(inputs, (-1, original_shape[-1]))
-
-    inp_mat = in_qdq(self.dtype, inp_mat, input_scale.value,
-                     input_amax_history.value)
-    kernel = in_qdq(self.dtype, kernel, kernel_scale.value,
-                    kernel_amax_history.value)
+    inp_mat = jnp.reshape(inputs,
+                          (-1, np.prod([inputs.shape[ax] for ax in axis])))
+    inp_mat = in_qdq(self.dtype, inp_mat, input_scale,
+                     input_amax_history)
+    kernel = in_qdq(self.dtype, kernel, kernel_scale,
+                    kernel_amax_history)
 
     # Actual dense layer math.
     out = lax.dot(inp_mat, kernel)
 
-    out = out_qdq(self.dtype, out, output_grad_scale.value,
-                  output_grad_amax_history.value)
+    out = out_qdq(self.dtype, out, output_grad_scale,
+                  output_grad_amax_history)
 
     if self.use_bias:
       # The bias has already been promoted. So, if it is fp32, we need to cast
@@ -293,9 +231,7 @@ class DenseGeneral(nn.Module):
       out = self.activation(out)
 
     # Reshape back the outputs.
-    out = jnp.reshape(out, (*original_shape[0:-len(axis)], out.shape[-1]))
+    out = jnp.reshape(out, (*original_shape[0:-len(axis)], *tuple(features)))
   
     return out
-
-
 

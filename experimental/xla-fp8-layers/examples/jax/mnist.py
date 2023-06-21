@@ -45,13 +45,15 @@ def step_fn(train_state, inputs, training):
     loss = optax.softmax_cross_entropy_with_integer_labels(logits, inputs['y'])
     return jnp.mean(loss, axis=0)
 
+  input_vars = train_state.variables() if use_fp8 else train_state.params
+
   if training:
     grad_fn = jax.value_and_grad(loss_fn, argnums=[0])
-    loss_val, vars_grads = grad_fn(train_state.params)
+    loss_val, vars_grads = grad_fn(input_vars)
     new_state = train_state.apply_gradients(grads=vars_grads[0])
     return new_state, loss_val
   else:
-    loss_val = loss_fn(train_state.params)
+    loss_val = loss_fn(input_vars)
     return loss_val
 
 (x_train, y_train), (x_test, y_test) = tf.keras.datasets.mnist.load_data()
@@ -78,7 +80,12 @@ def run():
 
   tx = optax.adam(learning_rate=0.001)
 
-  train_state = TrainState.create(params=variables, tx=tx, apply_fn=model.apply)
+  if use_fp8:
+    train_state = TrainState.create(
+        model_variables=variables, tx=tx, apply_fn=model.apply)
+  else:
+    train_state = TrainState.create(
+        params=variables, tx=tx, apply_fn=model.apply)
 
   train_step_fn = jax.jit(partial(step_fn, training=True))
   eval_step_fn = jax.jit(partial(step_fn, training=False))

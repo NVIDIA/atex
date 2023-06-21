@@ -20,8 +20,10 @@ import flax
 from flax import linen as nn
 from flax.traverse_util import flatten_dict
 from flax.traverse_util import unflatten_dict
+from flax import traverse_util
 
-from fp8layers.jax import DenseGeneral, FP8Helper, TrainState
+from fp8layers.jax import DenseGeneral, TrainState
+from flax.core.frozen_dict import FrozenDict
 
 # Sharding related
 from jax.experimental.pjit import pjit
@@ -29,6 +31,7 @@ from jax.sharding import Mesh, PartitionSpec
 from jax.experimental import mesh_utils
 from flax import struct, traverse_util, linen as nn
 from flax.linen import spmd # Flax Linen SPMD.
+from flax.linen import partitioning as flax_partitioning
 
 def get_hlo_text(rules):
   device_mesh = mesh_utils.create_device_mesh((4, 2))
@@ -341,12 +344,12 @@ class PartitionTest(jtu.JaxTestCase):
           )])), msg="all-gather on kernel k for matmul")
     self.assertRegex(
           hlo_text, re.compile('.*'.join([re.escape(x) for x in (
-              'reduce-scatter',
-              'f32[2048,4096]', # output
-              'reduce-scatter',
+              'all-reduce',
+              'f32[8192,4096]', # output
+              'all-reduce',
               'f32[8192,4096]', # input
               'replica_groups={{0,2,4,6},{1,3,5,7}}',
-          )])), msg="reduce-scatter on output dk for matmul")
+          )])), msg="all-reduce on output dk for matmul")
 
 
 if __name__ == '__main__':

@@ -1,27 +1,27 @@
 # FP8 Custom Layers
 
-**NOTE** This is a project for TF/JAX on supporting fp8 computations via XLA for
-the NVIDIA Hopper GPU architecture. It is still a WIP implementation that has
-not been extensively tested yet.
-
 > **NOTE** The 8-bit floating-point (FP8) data types are only featured on NVIDIA
 > Hopper GPUs or newer (>= SM90) and require CUDA 11.8 or higher.
 
 This repo provides a collection of custom fully-connected layers in TF and JAX
-to help utilize the 8-bit floating point (FP8) precision on Hopper GPUs for
-better performance with lower memory utilization in both training and inference.
+(incl. FLAX and PAX) to help utilize the 8-bit floating point (FP8) precision on
+Hopper GPUs for better performance with lower memory utilization in both
+training and inference.
 
 There are multiple ways to take advantage of FP8, such as the custom FP8 kernel
 based method (e.g., [Transformer
 Engine](https://github.com/NVIDIA/TransformerEngine)) or the native-XLA
 compiler-based method, which is the subject of this repo.
 
-To help the use of XLA-FP8, in this repo, we provide two high-level APIs for
-using FP8, namely the `fp8layers.tensorflow.Dense` and
-`fp8layers.jax.DenseGeneral` layers which are a drop-in replacement for
-`keras.layers.Dense` (TensorFlow) and `flax.linen.DenseGeneral` (JAX)
-respectively. You can directly place them into your XLA JIT-compiled functions
-to carry out computation in FP8.
+To help the use of XLA-FP8, we provide high-level APIs as a drop-in replacement
+option for different frameworks:
+
+* TF: `keras.layers.Dense` => `fp8layers.tensorflow.Dense` 
+* FLAX: `flax.linen.DenseGeneral` => `fp8layers.jax.DenseGeneral`
+* PAX: `praxis.layers.Linear` => `fp8layers.praxis.Linear`
+
+Users can directly place them into your XLA JIT-compiled functions to carry out
+computation in FP8.
 
 ## Installation
 
@@ -33,6 +33,17 @@ $ pip install .
 <...>
 Successfully installed fp8layers-python-0.1.0
 ```
+
+### Recommended Containers (Internal-only)
+
+* JAX: `gitlab-master.nvidia.com:5005/dl/dgx/jax:nightly-py3-devel`
+* TF: `gitlab-master.nvidia.com:5005/shuw/my_tf:xla_fp8`
+* PAX: `ghcr.io/nvidia/pax:nightly-2023-06-08`
+
+### Known issues of compatibility
+* Flax version should be no less than 0.6.9 on which JAX dense layer
+  implementation depends.
+
 ## A TensorFlow Example with High-Level API
 
 Using XLA-FP8 in TF is simple and users only need to replace the
@@ -65,7 +76,7 @@ $ python examples/tensorflow/transformer.py --mixed # fp16 45ms
 $ python examples/tensorflow/transformer.py --mixed --fp8 # fp16+fp8 35ms
 ```
 
-## A JAX Example with High-Level API
+## A FLAX Example with High-Level API
 
 Using XLA-FP8 in JAX is as easy as the TF and users only need to replace the
 `flax.linen.Dense[General]` with `fp8layers.jax.DenseGeneral` in the
@@ -92,28 +103,54 @@ $ python examples/jax/transformer.py --mixed # bf16 45ms
 $ python examples/jax/transformer.py --mixed --fp8 # bf16+fp8 32ms
 ```
 
+## A PAX Example with High-Level API
+
+PAX (Praxis) provides another way to abstract the linear transformation based on
+JAX. Accordingly, users can use `fp8layers.praxis.Linear` in place of
+`praxis.layers.Linear`.
+
+```python
+from fp8layers.praxis import Linear
+
+class Foo(base_layer.BaseLayer):
+  ...
+  #linear_tpl: LayerTpl = template_field(praxis.layers.Linear)
+  linear_tpl: LayerTpl = template_field(fp8layers.praxis.Linear)
+  ...
+foo = Foo()
+...
+fn = jax.jit(foo.apply)
+```
+
+
+
 ### Updating the FP8 Parameters
 Note, FLAX is a functional framework, meaning the layers are stateless and the
 parameters (such as the kernel and bias) are stored outside them. To follow this
 convention, we put the fp8-related parameters (i.e., scales and amax history)
-under `fp8_params` collection and won't update them during the train step. This
-is different from what we've done in the TF. In JAX, we return the new
-parameters as their "grads" and users need to replace the old parameters. We
-also provide a helper `TrainState` class to help with it. The pseudocode below
-shows the usage.
+under the `params` collection with the `_fp8_meta` suffix and won't update them
+during the train step. This is different from what we've done in the TF. In JAX,
+we return the new parameters as their "grads" and users need to replace the old
+parameters. We also provide a helper `TrainState` class to help with it. The
+pseudocode below shows the usage.
 
 ```python
 # Manually update the parameters:
 loss_val, grads = train_step_fn(variables, ...)
-# Update the fp8_params by simply relacing the old ones.
-variables['fp8_params'] = grads['fp8_params']
-# Update the non-fp8 params by using the existing optimizer.
-updates = opt.update(variables['params'], ...)
-variables['params'] = optax.apply_updates(updates)
+# (1) Pop out the fp8 params/grads from non-fp8 params/grads.
+fp8_grads, grads = split_by_suffix(grads['params'])
+fp8_params, params = split_by_suffix(variables['params'])
+# (2) Update the fp8_params by simply relacing the old ones.
+new_fp8_params = fp8_grads
+# (3) Update the non-fp8 params by using the existing optimizer.
+updates, new_opt_state = opt.update(grads, opt_state, params) 
+new_params = optax.apply_updates(params, updates)
+# (4) Merge the new params.
+variables['params'] = {**new_fp8_params, **params}
 
 # ... Or use our provided TrainState:
-train_state = TrainState.create(params=variables, ...)
-loss_val, grads = train_step_fn(train_state.params, ...)
+train_state = TrainState.create(model_variables=variables, ...)
+loss_val, grads = train_step_fn(train_state.variables(), ...)
 train_state = train_state.apply_gradients(grads=grads)
 ```
 
