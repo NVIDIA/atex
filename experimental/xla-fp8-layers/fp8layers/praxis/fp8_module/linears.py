@@ -1,6 +1,7 @@
 """Linear layers."""
 
-from typing import Optional
+from functools import partial
+from typing import Optional, Tuple, Union, Iterable
 
 from jax import lax
 from jax import numpy as jnp
@@ -10,21 +11,23 @@ from praxis import py_utils
 from praxis import pytypes
 from praxis.layers import activations
 from praxis.layers import base_ops
+from praxis.layers import flax_adapter
 
-from fp8layers.jax import in_qdq, out_qdq
+from fp8layers.flax import DenseGeneral
 
-NestedMap = py_utils.NestedMap
 WeightInit = base_layer.WeightInit
 WeightHParams = base_layer.WeightHParams
 template_field = base_layer.template_field
 LayerTpl = pax_fiddle.Config[base_layer.BaseLayer]
 JTensor = pytypes.JTensor
 
-class Dot(base_layer.BaseLayer):
-  """Wrapper around lax.dot used in standard Pax layers."""
 
-  def __call__(self, lhs: JTensor, rhs: JTensor) -> JTensor:
-    return lax.dot(lhs, rhs)
+def generate_params_init(name: str, initializer: WeightInit):
+   """Convert praxis init to flax-friendly init"""
+   def kernel_init(key, shape, dtype):
+     wp = WeightHParams(shape=shape, init=initializer, dtype=dtype)
+     return base_layer.init_var(wp, key, name)
+   return kernel_init
 
 class Linear(base_layer.BaseLayer):
   """Linear Fp8 layer without bias.
@@ -35,91 +38,45 @@ class Linear(base_layer.BaseLayer):
   """
   input_dims: int = 0
   output_dims: int = 0
+  kernel_axes: Tuple[str, ...] = ()
+  weight_init: Optional[WeightInit] = WeightInit.Xavier(scale=1.0)
+  axis: Union[Iterable[int], int] = -1
   amax_history_length: int = 16
-  weight_init: Optional[WeightInit] = None
-  dot_tpl: LayerTpl = template_field(Dot)
+  logical_axes_rules: Tuple[Tuple, ...] = None
+
+  def create_layer(self, name, flax_module_cls):
+    """create_layer"""
+    flax_module_p = pax_fiddle.Config(
+        flax_adapter.FlaxModuleAdapter,
+        module_factory_method=flax_module_cls,
+        logical_axes_rules=self.logical_axes_rules,
+        ici_mesh_shape=self.ici_mesh_shape,
+        dcn_mesh_shape=self.dcn_mesh_shape,
+        mesh_axis_names=self.mesh_axis_names)
+
+    self.create_child(name, flax_module_p.clone())
 
   def setup(self) -> None:
-    wp = self.weight_split_dims_mapping
-    self.create_variable(
-        'w',
-        WeightHParams(
-            shape=[self.input_dims, self.output_dims],
-            init=self.weight_init,
-            mesh_shape=self.mesh_shape,
-            tensor_split_dims_mapping=wp.wt,
-        ),
-    )
+    """setup"""
+    super().setup()
 
-    scale_args = {
-        'shape': [1],
-        'init': WeightInit.Constant(1.0),
-        'dtype': jnp.float32,
-        'mesh_shape': self.mesh_shape,
-        'tensor_split_dims_mapping': None,
-    }
-    amax_history_args = {
-        'shape': [self.amax_history_length],
-        'init': WeightInit.Constant(0.0),
-        'dtype': jnp.float32,
-        'mesh_shape': self.mesh_shape,
-        'tensor_split_dims_mapping': None,
-    }
-    self.create_variable(
-        'input_amax_history_fp8_meta', WeightHParams(**amax_history_args))
-    self.create_variable(
-        'kernel_amax_history_fp8_meta', WeightHParams(**amax_history_args))
-    self.create_variable(
-        'output_grad_amax_history_fp8_meta', WeightHParams(**amax_history_args))
+    dense_general_cls = partial(
+        DenseGeneral,
+        features=self.output_dims,
+        kernel_axes=self.kernel_axes,
+        kernel_init=generate_params_init('kernel', self.weight_init),
+        amax_history_length=self.amax_history_length,
+        use_bias=False,
+        bias_axes=None,
+        axis=self.axis,
+        dtype=self.dtype)
 
-    self.create_variable('input_scale_fp8_meta', WeightHParams(**scale_args))
-    self.create_variable('kernel_scale_fp8_meta', WeightHParams(**scale_args))
-    self.create_variable(
-         'output_grad_scale_fp8_meta', WeightHParams(**scale_args))
+    self.create_layer("linear", dense_general_cls)
 
-    self.create_child('dot', self.dot_tpl.clone())
+  def __call__(self, x: JTensor) -> JTensor:
+    """__call__"""
+    return self.linear(x)
 
-  def __call__(self, inputs: JTensor) -> JTensor:
-    """Apply projection to inputs.
-
-    Args:
-      inputs: The inputs JTensor.  Shaped [..., input_dims].
-
-    Returns:
-      Projected inputs.
-    """
-    ap = self.activation_split_dims_mapping
-
-    original_shape = inputs.shape
-    assert len(original_shape) >= 2
-
-    inputs = jnp.asarray(inputs, self.dtype)
-    kernel = jnp.asarray(self.theta.w, self.dtype)
-
-    # Reshape the inputs to 2D matrix.
-    inp_mat = jnp.reshape(inputs,
-                          (-1, self.input_dims))
-    inp_mat = in_qdq(self.dtype, inp_mat, self.theta.input_scale_fp8_meta,
-                     self.theta.input_amax_history_fp8_meta)
-    kernel = in_qdq(self.dtype, kernel, self.theta.kernel_scale_fp8_meta,
-                    self.theta.kernel_amax_history_fp8_meta)
-
-    # Actual dense layer math.
-    out = self.dot(inp_mat, kernel)
-
-    out = out_qdq(self.dtype, out, self.theta.output_grad_scale_fp8_meta,
-                  self.theta.output_grad_amax_history_fp8_meta)
-
-    # Reshape back the outputs.
-    out = jnp.reshape(out, (*original_shape[0:-1], self.output_dims))
-
-    # Adjust sharding annotation during decoding.
-    # TODO(pax): This logic should likely be lifted somewhere else.
-    ap_out = ap.out
-    if ap_out is not None and len(ap_out) == 3 and out.ndim == 2:
-      ap_out = [ap_out[0], ap_out[2]]
-    out = base_layer.maybe_shard(out, ap_out, self.mesh_axis_names)
-    return out
 
 class Bias(base_layer.BaseLayer):
   """Bias layer.

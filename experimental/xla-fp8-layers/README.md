@@ -4,8 +4,8 @@
 > Hopper GPUs or newer (>= SM90) and require CUDA 11.8 or higher.
 
 This repo provides a collection of custom fully-connected layers in TF and JAX
-(incl. FLAX and PAX) to help utilize the 8-bit floating point (FP8) precision on
-Hopper GPUs for better performance with lower memory utilization in both
+(incl. FLAX and Praxis) to help utilize the 8-bit floating point (FP8) precision
+on Hopper GPUs for better performance with lower memory utilization in both
 training and inference.
 
 There are multiple ways to take advantage of FP8, such as the custom FP8 kernel
@@ -17,8 +17,8 @@ To help the use of XLA-FP8, we provide high-level APIs as a drop-in replacement
 option for different frameworks:
 
 * TF: `keras.layers.Dense` => `fp8layers.tensorflow.Dense` 
-* FLAX: `flax.linen.DenseGeneral` => `fp8layers.jax.DenseGeneral`
-* PAX: `praxis.layers.Linear` => `fp8layers.praxis.Linear`
+* FLAX: `flax.linen.DenseGeneral` => `fp8layers.flax.DenseGeneral`
+* Praxis: `praxis.layers.Linear` => `fp8layers.praxis.Linear`
 
 Users can directly place them into your XLA JIT-compiled functions to carry out
 computation in FP8.
@@ -36,9 +36,8 @@ Successfully installed fp8layers-python-0.1.0
 
 ### Recommended Containers (Internal-only)
 
-* JAX: `gitlab-master.nvidia.com:5005/dl/dgx/jax:nightly-py3-devel`
-* TF: `gitlab-master.nvidia.com:5005/shuw/my_tf:xla_fp8`
-* PAX: `ghcr.io/nvidia/pax:nightly-2023-06-08`
+* [TF](https://gitlab-master.nvidia.com:5005/dl/dgx/tensorflow:master-py3-devel)
+* [FLAX/Praxis](https://github.com/NVIDIA/JAX-Toolbox/pkgs/container/pax)
 
 ### Known issues of compatibility
 * Flax version should be no less than 0.6.9 on which JAX dense layer
@@ -78,12 +77,13 @@ $ python examples/tensorflow/transformer.py --mixed --fp8 # fp16+fp8 35ms
 
 ## A FLAX Example with High-Level API
 
-Using XLA-FP8 in JAX is as easy as the TF and users only need to replace the
-`flax.linen.Dense[General]` with `fp8layers.jax.DenseGeneral` in the
-JIT-compiled model as shown in the example below.
+Using XLA-FP8 in FLAX is as easy as the TF and users only need to replace the
+`flax.linen.Dense[General]` by `fp8layers.flax.DenseGeneral` in the JIT-compile
+model as shown in the example below. Note that the fp8 parameters are defined as 
+ mutable variables which needs to be passed to forward computation functions.
 
 ```python
-from fp8layers.jax import DenseGeneral
+from fp8layers.flax import DenseGeneral
 
 class Foo(nn.Module):
   @nn.compact
@@ -93,20 +93,23 @@ class Foo(nn.Module):
 foo = Foo()
 ...
 fn = jax.jit(foo.apply)
+...
+y, updated_mutable_vars = fn({**non_fp8_vars, **mutable_vars}, x,
+                             mutable=['fp8_params'])
 ```
 
 Similarly, users can try out the basic encoder examples:
 
 ```bash
-$ python examples/jax/transformer.py # fp32 79ms
-$ python examples/jax/transformer.py --mixed # bf16 45ms
-$ python examples/jax/transformer.py --mixed --fp8 # bf16+fp8 32ms
+$ python examples/flax/transformer.py # fp32 79ms
+$ python examples/flax/transformer.py --mixed # bf16 45ms
+$ python examples/flax/transformer.py --mixed --fp8 # bf16+fp8 32ms
 ```
 
-## A PAX Example with High-Level API
+## A Praxis Example with High-Level API
 
-PAX (Praxis) provides another way to abstract the linear transformation based on
-JAX. Accordingly, users can use `fp8layers.praxis.Linear` in place of
+Praxis provides another way to abstract the linear transformation based on
+FLAX. Accordingly, users can use `fp8layers.praxis.Linear` in place of
 `praxis.layers.Linear`.
 
 ```python
@@ -123,35 +126,38 @@ fn = jax.jit(foo.apply)
 ```
 
 
-
 ### Updating the FP8 Parameters
 Note, FLAX is a functional framework, meaning the layers are stateless and the
 parameters (such as the kernel and bias) are stored outside them. To follow this
-convention, we put the fp8-related parameters (i.e., scales and amax history)
-under the `params` collection with the `_fp8_meta` suffix and won't update them
-during the train step. This is different from what we've done in the TF. In JAX,
-we return the new parameters as their "grads" and users need to replace the old
-parameters. We also provide a helper `TrainState` class to help with it. The
-pseudocode below shows the usage.
+convention, we store the fp8-related parameters (i.e., scales and amax history)
+under the `fp8_params` collection as `flax.linen.partitioning.variable_with_axes` 
+with named axes `fp8_meta`. Note that we won't update them during the train step, 
+which is different from what we've done in the TF. Instead, the updated 
+parameters are returned as their "grads" in `custom_vjp` to replace the old ones. 
+We also provide a helper `TrainState` class to help with it. The pseudocode 
+below demonstrates the usage.
 
 ```python
 # Manually update the parameters:
 loss_val, grads = train_step_fn(variables, ...)
 # (1) Pop out the fp8 params/grads from non-fp8 params/grads.
-fp8_grads, grads = split_by_suffix(grads['params'])
-fp8_params, params = split_by_suffix(variables['params'])
+fp8_grads, grads = split_by_collection(grads)
+fp8_params, params = split_by_collection(variables)
 # (2) Update the fp8_params by simply relacing the old ones.
 new_fp8_params = fp8_grads
 # (3) Update the non-fp8 params by using the existing optimizer.
 updates, new_opt_state = opt.update(grads, opt_state, params) 
 new_params = optax.apply_updates(params, updates)
 # (4) Merge the new params.
-variables['params'] = {**new_fp8_params, **params}
+variables['params'] = {**params}
+variables['fp8_params'] = {**new_fp8_params}
 
 # ... Or use our provided TrainState:
 train_state = TrainState.create(model_variables=variables, ...)
-loss_val, grads = train_step_fn(train_state.variables(), ...)
-train_state = train_state.apply_gradients(grads=grads)
+loss_val, grads = train_step_fn(train_state.variables(), train_state.mutable_variables(), ...)
+# grads contains both gradients of parameters irrelevant to fp8 and updated 
+# fp8-related parameters.
+train_state = train_state.apply_gradients(grads=grads_of_fp8_irrelevant_parameters, flax_mutables=grads_of_fp8_parameters)
 ```
 
 ### Supporting Multi-GPUs
@@ -163,7 +169,7 @@ conducted locally on each device's shard and then the collective all-reduce is
 used to get the actual amax. This global amax will be used in computing the new
 scaling factor and updating the amax history. All these partition and collective
 operations are done automatically by XLA. [These unit
-tests](./tests/jax/test_partition.py) provide a plenty of samples of various
+tests](./tests/flax/test_partition.py) provide a plenty of samples of various
 sharding strategies.
 
 
