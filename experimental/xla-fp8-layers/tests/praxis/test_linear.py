@@ -19,24 +19,6 @@ from praxis.layers import linears
 
 instantiate = base_layer.instantiate
 
-def sync_variables(vars_ref, vars_fp8, module, num_layers=2):
-  """Copy kernel variables from the reference to target."""
-  # The initialized variables have different values even if we use the same
-  # init_key. This might be due to our Praxis layer fails to pass the key to
-  # its children layers. For now, we manually synchronize them.
-  if module == 'mlp':
-    for i in range(num_layers):
-      mlp = f'mlp_layers_{i}'
-      vars_fp8['params'][mlp]['linear']['linear']['cld']['kernel'] = \
-          vars_ref['params'][mlp]['linear']['w']
-  elif module == 'ff':
-    vars_fp8['params']['linear']['linear']['cld']['kernel'] = \
-        vars_ref['params']['linear']['w']
-  elif module == 'linear':
-    vars_fp8['params']['linear']['cld']['kernel'] = vars_ref['params']['w']
-
-  return vars_fp8
-
 class LinearsTest(test_utils.TestCase):
   def setUp(self):
     super().setUp()
@@ -50,8 +32,8 @@ class LinearsTest(test_utils.TestCase):
     prng_key, init_key, random_key = random.split(prng_key, 3)
     inputs = random.uniform(random_key, (48, di)).astype(jnp.bfloat16)
 
-    linear_kwargs = {'input_dims': di, 'output_dims': do, 'dtype': jnp.bfloat16,
-                     'weight_init': base_layer.WeightInit.Xavier(scale=1.0)}
+    linear_kwargs = {'input_dims': di, 'output_dims': do,
+                     'fprop_dtype': jnp.bfloat16}
     linear_ref: linears.Linear = instantiate(
         pax_fiddle.Config(linears.Linear, name='linear_ref', **linear_kwargs)
     )
@@ -60,11 +42,7 @@ class LinearsTest(test_utils.TestCase):
     )
 
     vars_ref = linear_ref.init(init_key, inputs)
-    # TODO(kaixih): Not sure why the mutable needs to be explicitly set, since
-    # by default all collections (except 'intermediates') are mutable.
-    vars_fp8 = linear_fp8.init(init_key, inputs,
-                               mutable=['params', 'fp8_params'])
-    vars_fp8 = sync_variables(vars_ref, vars_fp8, 'linear')
+    vars_fp8 = linear_fp8.init(init_key, inputs)
 
     def _infer(layer, variables, x):
       y = layer.apply(variables, x)
@@ -100,8 +78,8 @@ class LinearsTest(test_utils.TestCase):
     inputs = random.uniform(random_key, (48, di)).astype(jnp.bfloat16)
     dy = random.uniform(random_key, (48, do))
 
-    linear_kwargs = {'input_dims': di, 'output_dims': do, 'dtype': jnp.bfloat16,
-                     'weight_init': base_layer.WeightInit.Xavier(scale=1.0)}
+    linear_kwargs = {'input_dims': di, 'output_dims': do,
+                     'fprop_dtype': jnp.bfloat16}
     linear_ref: linears.Linear = instantiate(
         pax_fiddle.Config(linears.Linear, name='linear_ref', **linear_kwargs)
     )
@@ -110,9 +88,7 @@ class LinearsTest(test_utils.TestCase):
     )
 
     vars_ref = linear_ref.init(init_key, inputs)
-    vars_fp8 = linear_fp8.init(init_key, inputs,
-                               mutable=['params', 'fp8_params'])
-    vars_fp8 = sync_variables(vars_ref, vars_fp8, 'linear')
+    vars_fp8 = linear_fp8.init(init_key, inputs)
 
     def _train(layer, variables, x):
       y = layer.apply(variables, x)
@@ -170,8 +146,7 @@ class LinearsTest(test_utils.TestCase):
     self.assertAllClose(loss_fp8, loss_ref, atol=0.1, rtol=0.05)
 
     dw_ref, dx_ref = grads_ref[0]['params']['w'], grads_ref[1]
-    dw_fp8, dx_fp8 = grads_fp8[0]['params']['linear']['cld']['kernel'], \
-                     grads_fp8[1]
+    dw_fp8, dx_fp8 = grads_fp8[0]['params']['w'], grads_fp8[1]
     self.assertAllClose(dw_fp8, dw_ref, atol=0.1, rtol=0.05)
     self.assertAllClose(dx_fp8, dx_ref, atol=0.1, rtol=0.05)
 
@@ -189,9 +164,8 @@ class LinearsTest(test_utils.TestCase):
         inputs = random.uniform(random_key, (48, di)).astype(dtype)
 
         ff_kwargs = {'input_dims': di, 'output_dims': do, 'has_bias': True,
-                     'bias_init': .3, 'dtype': dtype,
-                     'activation_tpl': pax_fiddle.Config(activation),
-                     'weight_init': base_layer.WeightInit.Xavier(scale=1.0)}
+                     'bias_init': .3, 'fprop_dtype': dtype,
+                     'activation_tpl': pax_fiddle.Config(activation)}
         ff_ref: linears.FeedForward = instantiate(
             pax_fiddle.Config(linears.FeedForward, name='ff_ref', **ff_kwargs)
         )
@@ -200,9 +174,7 @@ class LinearsTest(test_utils.TestCase):
         )
 
         vars_ref = ff_ref.init(init_key, inputs)
-        vars_fp8 = ff_fp8.init(init_key, inputs,
-                               mutable=['params', 'fp8_params'])
-        vars_fp8 = sync_variables(vars_ref, vars_fp8, 'ff')
+        vars_fp8 = ff_fp8.init(init_key, inputs)
 
         def _infer(layer, variables, x):
           y = layer.apply(variables, x)
@@ -249,9 +221,8 @@ class LinearsTest(test_utils.TestCase):
       # may be due to some of the intermediate results will be consumed by the
       # bprop. Double-check if it is the case.
       ff_kwargs = {'input_dims': di, 'output_dims': do, 'has_bias': True,
-                   'bias_init': .3, 'dtype': dtype,
-                   'activation_tpl': pax_fiddle.Config(activations.Identity),
-                   'weight_init': base_layer.WeightInit.Xavier(scale=1.0)}
+                   'bias_init': .3, 'fprop_dtype': dtype,
+                   'activation_tpl': pax_fiddle.Config(activations.Identity)}
       ff_ref: linears.FeedForward = instantiate(
           pax_fiddle.Config(linears.FeedForward, name='ff_ref', **ff_kwargs)
       )
@@ -260,9 +231,7 @@ class LinearsTest(test_utils.TestCase):
       )
 
       vars_ref = ff_ref.init(init_key, inputs)
-      vars_fp8 = ff_fp8.init(init_key, inputs,
-                             mutable=['params', 'fp8_params'])
-      vars_fp8 = sync_variables(vars_ref, vars_fp8, 'ff')
+      vars_fp8 = ff_fp8.init(init_key, inputs)
 
       def _train(layer, variables, x):
         y = layer.apply(variables, x)
@@ -324,10 +293,9 @@ class LinearsTest(test_utils.TestCase):
       flat_ref = traverse_util.flatten_dict(grads_ref[0]['params'], sep='/')
       flat_fp8 = traverse_util.flatten_dict(grads_fp8[0]['params'], sep='/')
 
-      w_names_ref = ['linear/w', 'bias/b']
-      w_names_fp8 = ['linear/linear/cld/kernel', 'bias/b']
-      for w_name_ref, w_name_fp8 in zip(w_names_ref, w_names_fp8):
-        dw_ref, dw_fp8 = flat_ref[w_name_ref], flat_fp8[w_name_fp8]
+      w_names = ['linear/w', 'bias/b']
+      for w_name in w_names:
+        dw_ref, dw_fp8 = flat_ref[w_name], flat_fp8[w_name]
         self.assertAllClose(dw_fp8, dw_ref, atol=0.1, rtol=0.05)
 
       dx_ref, dx_fp8 = grads_ref[1], grads_fp8[1]
@@ -342,9 +310,8 @@ class LinearsTest(test_utils.TestCase):
     inputs = random.uniform(random_key, (48, di)).astype(dtype)
 
     ff_kwargs = {'input_dims': di, 'output_dims': do, 'has_bias': True,
-                 'bias_init': .3, 'dtype': dtype,
-                 'activation_tpl': pax_fiddle.Config(activations.ReLU),
-                 'weight_init': base_layer.WeightInit.Xavier(scale=1.0)}
+                 'bias_init': .3, 'fprop_dtype': dtype,
+                 'activation_tpl': pax_fiddle.Config(activations.ReLU)}
     ff_ref = pax_fiddle.Config(linears.FeedForward, name='ff_ref', **ff_kwargs)
     ff_fp8 = pax_fiddle.Config(FeedForward, name='ff_fp8', **ff_kwargs)
 
@@ -358,8 +325,7 @@ class LinearsTest(test_utils.TestCase):
     )
 
     vars_ref = mlp_ref.init(init_key, inputs)
-    vars_fp8 = mlp_fp8.init(init_key, inputs, mutable=['params', 'fp8_params'])
-    vars_fp8 = sync_variables(vars_ref, vars_fp8, 'mlp')
+    vars_fp8 = mlp_fp8.init(init_key, inputs)
 
     def _infer(layer, variables, x):
       y = layer.apply(variables, x)
@@ -412,9 +378,8 @@ class LinearsTest(test_utils.TestCase):
     dy = random.uniform(random_key, (48, do))
 
     ff_kwargs = {'input_dims': di, 'output_dims': do, 'has_bias': True,
-                 'bias_init': .3, 'dtype': dtype,
-                 'activation_tpl': pax_fiddle.Config(activations.ReLU),
-                 'weight_init': base_layer.WeightInit.Xavier(scale=1.0)}
+                 'bias_init': .3, 'fprop_dtype': dtype,
+                 'activation_tpl': pax_fiddle.Config(activations.ReLU)}
     ff_ref = pax_fiddle.Config(linears.FeedForward, name='ff_ref', **ff_kwargs)
     ff_fp8 = pax_fiddle.Config(FeedForward, name='ff_fp8', **ff_kwargs)
 
@@ -428,8 +393,7 @@ class LinearsTest(test_utils.TestCase):
     )
 
     vars_ref = mlp_ref.init(init_key, inputs)
-    vars_fp8 = mlp_fp8.init(init_key, inputs, mutable=['params', 'fp8_params'])
-    vars_fp8 = sync_variables(vars_ref, vars_fp8, 'mlp')
+    vars_fp8 = mlp_fp8.init(init_key, inputs)
 
     def _train(layer, variables, x):
       y = layer.apply(variables, x)
@@ -528,14 +492,10 @@ class LinearsTest(test_utils.TestCase):
     flat_ref = traverse_util.flatten_dict(grads_ref[0]['params'], sep='/')
     flat_fp8 = traverse_util.flatten_dict(grads_fp8[0]['params'], sep='/')
 
-    w_names_ref = ['mlp_layers_0/linear/w', 'mlp_layers_0/bias/b',
-                   'mlp_layers_1/linear/w', 'mlp_layers_1/bias/b']
-    w_names_fp8 = ['mlp_layers_0/linear/linear/cld/kernel',
-                   'mlp_layers_0/bias/b',
-                   'mlp_layers_1/linear/linear/cld/kernel',
-                   'mlp_layers_1/bias/b']
-    for w_name_ref, w_name_fp8 in zip(w_names_ref, w_names_fp8):
-      dw_ref, dw_fp8 = flat_ref[w_name_ref], flat_fp8[w_name_fp8]
+    w_names = ['mlp_layers_0/linear/w', 'mlp_layers_0/bias/b',
+               'mlp_layers_1/linear/w', 'mlp_layers_1/bias/b']
+    for w_name in w_names:
+      dw_ref, dw_fp8 = flat_ref[w_name], flat_fp8[w_name]
       self.assertAllClose(dw_fp8, dw_ref, atol=0.1, rtol=0.05)
 
     dx_ref, dx_fp8 = grads_ref[1], grads_fp8[1]

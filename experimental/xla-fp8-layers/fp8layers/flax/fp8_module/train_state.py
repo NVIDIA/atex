@@ -46,70 +46,68 @@ class TrainState(struct.PyTreeNode):
   Args:
     step: Counter starts at 0 and is incremented by every call to
       `.apply_gradients()`.
-    params: The params that will be updated by the `tx`.
-    fp8_params: The fp8_meta params that will be replaced by their grads.
+    apply_fn: Usually set to `model.apply()`. Kept in this dataclass for
+      convenience to have a shorter params list for the `train_step()` function
+      in your training loop.
+    model_variables: The params that needs to be updated.
     tx: An Optax gradient transformation.
     opt_state: The state for `tx`.
-    params_axes: Contains axis metadata (e.g., names) matching `params` tree.
   """
   step: int
   apply_fn: Callable = struct.field(pytree_node=False)
-  params: core.FrozenDict[str, Any] = struct.field(pytree_node=True)
+  model_variables: core.FrozenDict[str, Any] = struct.field(pytree_node=True)
   tx: optax.GradientTransformation = struct.field(pytree_node=False)
   opt_state: optax.OptState = struct.field(pytree_node=True)
-  params_axes: core.FrozenDict[str, Any] = struct.field(pytree_node=True)
-  flax_mutables: FrozenDict = EMPTY_DICT
-  validate_axes: bool = True
-  # Contains axis metadata (e.g., names) matching flax_mutables tree.
-  flax_mutables_axes: Optional[FrozenVariableDict] = None
 
-  def variables(self) -> core.FrozenDict[str, Any]:
-    return core.freeze({'params': self.params})
-  
-  def mutable_variables(self) -> core.FrozenDict[str, Any]:
-    if self.flax_mutables:
-      return core.freeze(self.flax_mutables)
-    return core.freeze({})
-
-  def apply_gradients(self, *, grads, flax_mutables=EMPTY_DICT, **kwargs):
+  def apply_gradients(self, *, grads, **kwargs):
+    # For the variables in the params collection, we will use the optimizer as
+    # usual.
     updates, new_opt_state = self.tx.update(
-        grads['params'], self.opt_state, self.params)
-    new_params = optax.apply_updates(self.params, updates)
+        grads['params'], self.opt_state, self.model_variables['params'])
+    new_params = optax.apply_updates(self.model_variables['params'], updates)
+
+    update_model_variables = core.unfreeze(self.model_variables)
+    update_model_variables['params'] = new_params
+
+    # For the fp8 variables in the fp8-params collection, we will simply replace
+    # them with their grads, because their grads are actually new values defined
+    # in the custom_vjp functions.
+    if 'fp8_params' in grads:
+      update_model_variables['fp8_params'] = grads['fp8_params']
+
     return self.replace(
         step=self.step + 1,
-        params=new_params,
-        flax_mutables=flax_mutables,
+        model_variables=core.freeze(update_model_variables),
         opt_state=new_opt_state,
     )
 
   @classmethod
-  def create(cls, apply_fn, model_variables, tx, validate_axes=True):
+  def create(cls, apply_fn, model_variables, tx):
     """Creates a new instance with `step=0` and initialized `opt_state`."""
-    other_variables, params = core.pop(model_variables, 'params')
 
-    if 'params_axes' in other_variables:
-      other_variables, params_axes = core.pop(
-          other_variables, 'params_axes'
-      )
-      if validate_axes:
-        _validate_params_axes(params_axes, params)
-    else:
-      params_axes = None
+    # For some unknown reason, we have to explicitly freeze the model variables
+    # to make sure the initialized optimizer states are also frozen. Otherwise,
+    # the runtime would complain about the unexpected dtype.
+    model_variables = core.freeze(model_variables)
 
-    # Split other_variables into mutables and their corresponding axes.
-    flax_mutables, flax_mutables_axes = _split_variables_and_axes(
-        other_variables
-    )
-    flax_mutables_axes = flax_mutables_axes or None
+    params = model_variables['params']
+
+    # We assume all the params are annotated when the params_axes is specified.
+    if 'params_axes' in model_variables:
+      params_axes = model_variables['params_axes']
+      _validate_params_axes(params_axes, params)
+
     opt_state = tx.init(params)
+
+    if 'fp8_params' in model_variables:
+      fp8_params = model_variables['fp8_params']
+      fp8_params_axes = model_variables['fp8_params_axes']
+      _validate_params_axes(fp8_params_axes, fp8_params)
+
     return cls(
         step=0,
         apply_fn=apply_fn,
-        params=params,
+        model_variables=model_variables,
         tx=tx,
         opt_state=opt_state,
-        params_axes=params_axes,
-        flax_mutables=flax_mutables,
-        flax_mutables_axes=flax_mutables_axes,
-        validate_axes=validate_axes,
     )

@@ -40,38 +40,19 @@ class MnistModel(nn.Module):
     return output
 
 def step_fn(train_state, inputs, training):
-  def loss_fn(diff_vars, x, labels, mutable_variables=None):
-    if use_fp8:
-      logits, _ = train_state.apply_fn({**diff_vars, **mutable_variables}, x,
-                                       mutable=['fp8_params'])
-    else:
-      logits = train_state.apply_fn(diff_vars, x)
+  def loss_fn(vars, x, labels):
+    logits = train_state.apply_fn(vars, x)
     loss = optax.softmax_cross_entropy_with_integer_labels(logits, labels)
     return jnp.mean(loss, axis=0)
-
+  grad_fn = jax.value_and_grad(loss_fn, argnums=[0])
+  input_args = [train_state.model_variables if use_fp8 else train_state.params,
+                inputs['x'], inputs['y']]
   if training:
-    if use_fp8:
-      grad_fn = jax.value_and_grad(loss_fn, argnums=[0, 3])
-      loss_val, vars_grads = grad_fn(train_state.variables(), inputs['x'],
-                                     inputs['y'],
-                                     train_state.mutable_variables())
-      new_state = train_state.apply_gradients(grads=vars_grads[0],
-                                              flax_mutables=vars_grads[1])
-    else:
-      grad_fn = jax.value_and_grad(loss_fn, argnums=[0])
-      loss_val, vars_grads = grad_fn(train_state.params, inputs['x'],
-                                     inputs['y'])
-      new_state = train_state.apply_gradients(grads=vars_grads[0])
+    loss_val, vars_grads = grad_fn(*input_args)
+    new_state = train_state.apply_gradients(grads=vars_grads[0])
     return new_state, loss_val
   else:
-    if use_fp8:
-      input_args = {'diff_vars': train_state.variables(), 'x': inputs['x'], 
-                    'labels': inputs['y'],
-                    'mutable_variables': train_state.mutable_variables()}
-    else:      
-      input_args = {'diff_vars': train_state.params, 'x': inputs['x'],
-                    'labels': inputs['y']}
-    loss_val = loss_fn(**input_args)
+    loss_val = loss_fn(*input_args)
     return loss_val
 
 (x_train, y_train), (x_test, y_test) = tf.keras.datasets.mnist.load_data()

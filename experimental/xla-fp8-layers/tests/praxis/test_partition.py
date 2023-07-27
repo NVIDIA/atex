@@ -15,7 +15,8 @@ from jax import value_and_grad
 # Sharding related
 from jax.experimental import mesh_utils
 from jax.experimental.pjit import pjit
-from jax.sharding import Mesh, PartitionSpec
+from jax.sharding import Mesh
+from jax.sharding import PartitionSpec as P
 from flax.linen import spmd # Flax Linen SPMD.
 
 from fp8layers.praxis import Linear
@@ -23,21 +24,17 @@ from fp8layers.praxis import Linear
 from praxis import base_layer
 from praxis import pax_fiddle
 
-WeightInit = base_layer.WeightInit
 instantiate = base_layer.instantiate
+var_partition_specs = base_layer.var_partition_specs 
+WeightSharding = base_layer.BaseLayer.WeightSharding
 
-
-def get_hlo_text(rules):
+def get_hlo_text(in_shardings):
   mesh_names = ('data', 'model')
   mesh_shape = (4, 2)
   device_mesh = mesh_utils.create_device_mesh(mesh_shape)
   mesh = Mesh(devices=device_mesh, axis_names=mesh_names)
 
-  linear_kwargs = {'input_dims': 8192, 'output_dims': 8192,
-                   'kernel_axes': ('hidden', 'mlp'),
-                   'logical_axes_rules': rules,
-                   'mesh_axis_names': mesh_names,
-                   'ici_mesh_shape': mesh_shape}
+  linear_kwargs = {'input_dims': 8192, 'output_dims': 8192}
   model: Linear = instantiate(
       pax_fiddle.Config(Linear, name='linear_fp8', **linear_kwargs)
   )
@@ -45,20 +42,24 @@ def get_hlo_text(rules):
   x = random.normal(random.PRNGKey(0), (8192, 8192))
   dy = random.normal(random.PRNGKey(0), (8192, 8192))
   k = random.PRNGKey(0)
+
+  var_hparams = model.abstract_init_with_metadata(x)
+  var_pspecs = var_partition_specs(var_hparams, mesh_shape, mesh_names)
+
+  # in_shardings[0] only contains the PSpec of the weight. We also need to
+  # define the PSpecs for all the other variables.
+  var_pspecs['params']['w'] = in_shardings[0]
+  in_shardings[0] = var_pspecs
   
-  spmd.set_logical_axis_rules(rules)
-  
-  initialized_state = model.init(k, x, mutable=['params', 'fp8_params'])
+  initialized_state = model.init(k, x)
 
   def loss_fn(state, x, dy):
-    x = spmd.with_logical_constraint(x, ('batch', 'embed'))
-    dy = spmd.with_logical_constraint(dy, ('batch', 'mlp'))
-
     y = model.apply(state, x)
     loss = y * dy.astype(y.dtype)
     return jnp.sum(loss)
   
-  pjit_step_fn = pjit(value_and_grad(loss_fn, argnums=[0]))
+  pjit_step_fn = pjit(value_and_grad(loss_fn, argnums=[0]),
+                      in_shardings=in_shardings)
   
   with mesh:
     lowered = pjit_step_fn.lower(initialized_state, x, dy)
@@ -73,13 +74,12 @@ class PartitionTest(jtu.JaxTestCase):
   def setUp(self):
     super().setUp()
 
-  def testAllReduceDp(self):
+  def testDp(self):
     if jtu.device_under_test() != "gpu" or device_count() < 8:
       self.skipTest(f"Test enabled only for 8 GPUs")
 
-    rules = (('batch', 'data'),)
-
-    hlo_text = get_hlo_text(rules)
+    in_shardings = [None, P('data', None), P('data', None)]
+    hlo_text = get_hlo_text(in_shardings)
 
     # The all-reduce for the input and output_grads follows the same replica
     # group. So, it accepts two operands and return a tuple.
@@ -95,21 +95,38 @@ class PartitionTest(jtu.JaxTestCase):
 
     self.assertRegex(
           hlo_text, re.compile('.*'.join([re.escape(x) for x in (
+              'cublas',
+              'f32[2048,8192]', # output
+              'custom-call',
+              'f8e4m3fn[2048,8192]{1,0}',
+              'f8e4m3fn[8192,8192]{1,0}',
+          )])), msg="fprop gemm")
+
+    self.assertRegex(
+          hlo_text, re.compile('.*'.join([re.escape(x) for x in (
+              'cublas',
+              'f32[8192,8192]', # output
+              'custom-call',
+              'f8e4m3fn[8192,2048]{1,0}',
+              'f8e5m2[8192,2048]{1,0}',
+          )])), msg="bprop gemm")
+
+    self.assertRegex(
+          hlo_text, re.compile('.*'.join([re.escape(x) for x in (
               'all-reduce',
               'f32[8192,8192]', # output
               'all-reduce',
               'f32[8192,8192]', # input
               'replica_groups={{0,2,4,6},{1,3,5,7}}',
-          )])), msg="all-reduce on intermediate results of dy*x=dk matmul")
+          )])), msg="all-reduce on output results of dy*x=dk matmul")
 
 
-  def testAllReduceTpRow(self):
+  def testTpRow(self):
     if jtu.device_under_test() != "gpu" or device_count() < 8:
       self.skipTest(f"Test enabled only for 8 GPUs")
 
-    rules = (('hidden', 'model'),)
-
-    hlo_text = get_hlo_text(rules)
+    in_shardings = [P('model', None), None, None]
+    hlo_text = get_hlo_text(in_shardings)
 
     self.assertRegex(
         hlo_text, re.compile('.*'.join([re.escape(x) for x in (
@@ -122,6 +139,15 @@ class PartitionTest(jtu.JaxTestCase):
 
     self.assertRegex(
           hlo_text, re.compile('.*'.join([re.escape(x) for x in (
+              'cublas',
+              'f32[8192,8192]', # output
+              'custom-call',
+              'f8e4m3fn[8192,4096]{1,0}',
+              'f8e4m3fn[8192,4096]{1,0}',
+          )])), msg="fprop gemm")
+
+    self.assertRegex(
+          hlo_text, re.compile('.*'.join([re.escape(x) for x in (
               'all-reduce',
               'f32[8192,8192]', # output
               'all-reduce',
@@ -129,14 +155,22 @@ class PartitionTest(jtu.JaxTestCase):
               'replica_groups={{0,1},{2,3},{4,5},{6,7}}',
           )])), msg="all-reduce on intermediate results of x*k=y matmul")
   
+    self.assertRegex(
+          hlo_text, re.compile('.*'.join([re.escape(x) for x in (
+              'cublas',
+              'f32[4096,8192]', # output
+              'custom-call',
+              'f8e4m3fn[4096,8192]{1,0}',
+              'f8e5m2[8192,8192]{1,0}',
+          )])), msg="bprop gemm")
+    
 
-  def testAllReduceTpCol(self):
+  def testTpCol(self):
     if jtu.device_under_test() != "gpu" or device_count() < 8:
       self.skipTest(f"Test enabled only for 8 GPUs")
 
-    rules = (('mlp', 'model'),)
-
-    hlo_text = get_hlo_text(rules)
+    in_shardings = [P(None, 'model'), None, P(None, 'model')]
+    hlo_text = get_hlo_text(in_shardings)
 
     # The all-reduce for the kernel and output_grads follows the same replica
     # group. So, it accepts two operands and return a tuple.
@@ -150,15 +184,31 @@ class PartitionTest(jtu.JaxTestCase):
             'replica_groups={{0,1},{2,3},{4,5},{6,7}}',
         )])), msg="all-reduce on kernel and output_grad amax")
 
+    self.assertRegex(
+          hlo_text, re.compile('.*'.join([re.escape(x) for x in (
+              'cublas',
+              'f32[8192,4096]', # output
+              'custom-call',
+              'f8e4m3fn[8192,8192]{1,0}',
+              'f8e4m3fn[4096,8192]{1,0}',
+          )])), msg="fprop gemm")
 
-  def testAllReduceDpTpRow(self):
+    self.assertRegex(
+          hlo_text, re.compile('.*'.join([re.escape(x) for x in (
+              'cublas',
+              'f32[8192,4096]', # output
+              'custom-call',
+              'f8e4m3fn[8192,8192]{1,0}',
+              'f8e5m2[4096,8192]{1,0}',
+          )])), msg="bprop gemm")
+
+
+  def testDpTpRow(self):
     if jtu.device_under_test() != "gpu" or device_count() < 8:
       self.skipTest(f"Test enabled only for 8 GPUs")
 
-    rules = (('batch', 'data'),
-             ('hidden', 'model'))
-
-    hlo_text = get_hlo_text(rules)
+    in_shardings = [P('model', None), P('data', None), P('data', None)]
+    hlo_text = get_hlo_text(in_shardings)
     
     self.assertRegex(
           hlo_text, re.compile('.*'.join([re.escape(x) for x in (
@@ -183,12 +233,31 @@ class PartitionTest(jtu.JaxTestCase):
 
     self.assertRegex(
           hlo_text, re.compile('.*'.join([re.escape(x) for x in (
+              'cublas',
+              'f32[2048,8192]', # output
+              'custom-call',
+              'f8e4m3fn[2048,4096]{1,0}',
+              'f8e4m3fn[8192,4096]{1,0}',
+          )])), msg="fprop gemm")
+    
+    self.assertRegex(
+          hlo_text, re.compile('.*'.join([re.escape(x) for x in (
               'all-reduce',
               'f32[2048,8192]', # output
               'all-reduce',
               'f32[2048,8192]', # input
               'replica_groups={{0,1},{2,3},{4,5},{6,7}}',
-          )])), msg="all-reduce on intermediate results of x*k=y matmul")
+          )])), msg="all-reduce on output results of x*k=y matmul")
+
+    self.assertRegex(
+          hlo_text, re.compile('.*'.join([re.escape(x) for x in (
+              'cublas',
+              'f32[4096,8192]', # output
+              'custom-call',
+              'f8e4m3fn[4096,2048]{1,0}',
+              'f8e5m2[8192,2048]{1,0}',
+          )])), msg="bprop gemm")
+
     self.assertRegex(
           hlo_text, re.compile('.*'.join([re.escape(x) for x in (
               'all-reduce',
@@ -199,14 +268,12 @@ class PartitionTest(jtu.JaxTestCase):
           )])), msg="all-reduce on intermediate results of dy*x=dk matmul")
 
 
-  def testAllReduceDpTpCol(self):
+  def testDpTpCol(self):
     if jtu.device_under_test() != "gpu" or device_count() < 8:
       self.skipTest(f"Test enabled only for 8 GPUs")
 
-    rules = (('batch', 'data'),
-             ('mlp', 'model'))
-
-    hlo_text = get_hlo_text(rules)
+    in_shardings = [P(None, 'model'), P('data', None), P('data', 'model')]
+    hlo_text = get_hlo_text(in_shardings)
 
     self.assertRegex(
           hlo_text, re.compile('.*'.join([re.escape(x) for x in (
@@ -239,23 +306,43 @@ class PartitionTest(jtu.JaxTestCase):
 
     self.assertRegex(
           hlo_text, re.compile('.*'.join([re.escape(x) for x in (
+              'cublas',
+              'f32[2048,4096]', # output
+              'custom-call',
+              'f8e4m3fn[2048,8192]{1,0}',
+              'f8e4m3fn[4096,8192]{1,0}',
+          )])), msg="fprop gemm")
+
+    self.assertRegex(
+          hlo_text, re.compile('.*'.join([re.escape(x) for x in (
+              'cublas',
+              'f32[8192,4096]', # output
+              'custom-call',
+              'f8e4m3fn[8192,2048]{1,0}',
+              'f8e5m2[4096,2048]{1,0}',
+          )])), msg="bprop gemm")
+
+    self.assertRegex(
+          hlo_text, re.compile('.*'.join([re.escape(x) for x in (
               'all-reduce',
               'f32[8192,4096]', # output
               'all-reduce',
               'f32[8192,4096]', # input
               'replica_groups={{0,2,4,6},{1,3,5,7}}',
-          )])), msg="all-reduce on intermediate results of dy*x=dk matmul")
+          )])), msg="all-reduce on output results of dy*x=dk matmul")
 
 
-  def testAllReduceOptimizedDpTpRow(self):
+  def testFullShardingDpTpRow(self):
+    # In the typical Dp test, we only shard the input tensor by its first axis.
+    # This test, however, shard the input tensor along both axes. Eventually,
+    # this test same with the testDpTpRow, but we avoid the slicing on the input
+    # tensor.
+
     if jtu.device_under_test() != "gpu" or device_count() < 8:
       self.skipTest(f"Test enabled only for 8 GPUs")
 
-    rules = (('batch', 'data'),
-             ('embed', 'model'),
-             ('hidden', 'model'))
-
-    hlo_text = get_hlo_text(rules)
+    in_shardings = [P('model', None), P('data', 'model'), P('data', None)]
+    hlo_text = get_hlo_text(in_shardings)
     
     self.assertRegex(
           hlo_text, re.compile('.*'.join([re.escape(x) for x in (
@@ -285,6 +372,15 @@ class PartitionTest(jtu.JaxTestCase):
             'replica_groups={{0,2,4,6},{1,3,5,7}}',
         )])), hlo_text))
     self.assertEqual(2, count, msg="all-reduce on output_grad amax and loss")
+
+    self.assertRegex(
+          hlo_text, re.compile('.*'.join([re.escape(x) for x in (
+              'cublas',
+              'f32[2048,8192]', # output
+              'custom-call',
+              'f8e4m3fn[2048,4096]{1,0}',
+              'f8e4m3fn[8192,4096]{1,0}',
+          )])), msg="fprop gemm")
     
     self.assertRegex(
           hlo_text, re.compile('.*'.join([re.escape(x) for x in (
@@ -294,6 +390,16 @@ class PartitionTest(jtu.JaxTestCase):
               'f32[2048,8192]', # input
               'replica_groups={{0,1},{2,3},{4,5},{6,7}}',
           )])), msg="all-reduce on intermediate results of x*k=y matmul")
+
+    self.assertRegex(
+          hlo_text, re.compile('.*'.join([re.escape(x) for x in (
+              'cublas',
+              'f32[4096,8192]', # output
+              'custom-call',
+              'f8e4m3fn[4096,2048]{1,0}',
+              'f8e5m2[8192,2048]{1,0}',
+          )])), msg="bprop gemm")
+
     self.assertRegex(
           hlo_text, re.compile('.*'.join([re.escape(x) for x in (
               'all-reduce',
@@ -304,16 +410,12 @@ class PartitionTest(jtu.JaxTestCase):
           )])), msg="all-reduce on intermediate results of dy*x=dk matmul")
 
 
-  def testAllReduceFullSharding(self):
+  def testFullSharding(self):
     if jtu.device_under_test() != "gpu" or device_count() < 8:
       self.skipTest(f"Test enabled only for 8 GPUs")
 
-    rules = (('batch', 'data'),
-             ('embed', 'model'),
-             ('hidden', 'data'),
-             ('mlp', 'model'))
-
-    hlo_text = get_hlo_text(rules)
+    in_shardings = [P('data', 'model'), P('data', 'model'), P('data', 'model')]
+    hlo_text = get_hlo_text(in_shardings)
 
     # The all-reduce for the amax follows the same replica group.
     self.assertRegex(
@@ -343,12 +445,35 @@ class PartitionTest(jtu.JaxTestCase):
               'f32[2048,4096]', # input
               'replica_groups={{0,2,4,6},{1,3,5,7}}',
           )])), msg="all-gather on kernel k for matmul")
+
+    # TODO(shuw): check if the fp8 gemm is used when the cases of all-gather
+    # over inputs get supported.
+    self.assertRegex(
+          hlo_text, re.compile('.*'.join([re.escape(x) for x in (
+              'custom-call',
+              'f32[2048,4096]', # output
+              'custom-call',
+              'f32[2048,8192]{0,1}',
+              'f32[8192,4096]{1,0}',
+          )])), msg="fprop gemm")
+
+    # TODO(shuw): check if the fp8 gemm is used when the cases of all-gather
+    # over inputs get supported.
+    self.assertRegex(
+          hlo_text, re.compile('.*'.join([re.escape(x) for x in (
+              'custom-call',
+              'f32[4096,8192]', # output
+              'custom-call',
+              'f32[2048,4096]{0,1}',
+              'f32[2048,8192]{0,1}',
+          )])), msg="bprop gemm")
+    
     self.assertRegex(
           hlo_text, re.compile('.*'.join([re.escape(x) for x in (
               'all-reduce',
-              'f32[8192,4096]', # output
+              'f32[4096,8192]', # output
               'all-reduce',
-              'f32[8192,4096]', # input
+              'f32[4096,8192]', # input
               'replica_groups={{0,2,4,6},{1,3,5,7}}',
           )])), msg="all-reduce on output dk for matmul")
 

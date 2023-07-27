@@ -10,8 +10,7 @@ from jax import lax
 from jax import numpy as jnp
 from jax import random
 
-from .fp8 import in_qdq, out_qdq
-
+from .fp8 import fp8_dot
 
 param_with_axes = nn_partitioning.param_with_axes
 variable_with_axes = nn_partitioning.variable_with_axes
@@ -135,23 +134,19 @@ class DenseGeneral(nn.Module):
     inputs, kernel, bias = nn.dtypes.promote_dtype(inputs, kernel, bias,
                                                    dtype=self.dtype)
 
-    # Reshape the inputs to 2D matrix.
-    inp_mat = jnp.reshape(inputs,
-                          (-1, np.prod([inputs.shape[ax] for ax in axis])))
-    inp_mat = in_qdq(self.dtype, inp_mat, input_scale.value,
-                     input_amax_history.value)
-    kernel = in_qdq(self.dtype, kernel, kernel_scale.value,
-                    kernel_amax_history.value)
+    # Reshape the inputs to 2D matrix to call the fp8_dot. The result will be
+    # casted back at the end.
+    inp = jnp.reshape(inputs, (-1, np.prod([inputs.shape[ax] for ax in axis])))
 
-    # Actual dense layer math.
-    out = lax.dot(inp_mat, kernel)
-
-    out = out_qdq(self.dtype, out, output_grad_scale.value,
-                  output_grad_amax_history.value)
+    out = fp8_dot(inp, kernel, self.dtype,
+                  input_scale.value, input_amax_history.value,
+                  kernel_scale.value, kernel_amax_history.value,
+                  output_grad_scale.value, output_grad_amax_history.value)
 
     if self.use_bias:
-      # The bias has already been promoted. So, if it is fp32, we need to cast
-      # it to bf16 to trigger fp8 matmul fusion.
+      # To this point, the bias has already been promoted to self.dtype. If it
+      # is still fp32, we manually cast it to bf16 to trigger fullfil the fp8
+      # matmul fusion requirement.
       if bias.dtype == jnp.float32:
         bias = bias.astype(jnp.bfloat16)
         bias = bias.astype(jnp.float32)

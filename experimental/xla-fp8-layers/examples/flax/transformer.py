@@ -8,9 +8,13 @@ import jax.numpy as jnp
 import optax
 
 from flax import linen as nn
+from flax.linen import partitioning as nn_partitioning
 from flax.training import train_state
 from fp8layers.flax import DenseGeneral, TrainState
 from jax.experimental.pjit import pjit
+
+
+param_with_axes = nn_partitioning.param_with_axes
 
 dropout_rate = 0.0
 
@@ -118,6 +122,27 @@ class BasicMLP(nn.Module):
                         dtype=dtype, name='wo')(x)
     return output
 
+# ------------------------------------------------------------------------------
+# Customized Layernorm - no subtraction of mean or bias.
+# ------------------------------------------------------------------------------
+class LayerNorm(nn.Module):
+  """T5 Layer normalization operating on the last axis of the input data."""
+  epsilon: float = 1e-6
+  dtype: Any = jnp.float32
+  scale_init: Initializer = nn.initializers.ones
+
+  @nn.compact
+  def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+    """Applies layer normalization on the input."""
+    x = jnp.asarray(x, jnp.float32)
+    features = x.shape[-1]
+    mean2 = jnp.mean(jax.lax.square(x), axis=-1, keepdims=True)
+    y = jnp.asarray(x * jax.lax.rsqrt(mean2 + self.epsilon), self.dtype)
+    scale = param_with_axes(
+        'scale', self.scale_init, (features,), jnp.float32, axes=('embed',))
+
+    scale = jnp.asarray(scale, self.dtype)
+    return y * scale
 
 class BasicTransformer(nn.Module):
   hidden_size: int
@@ -128,7 +153,7 @@ class BasicTransformer(nn.Module):
   hidden_dropout: float = 0.01
 
   def setup(self):
-    self.ln1 = nn.LayerNorm(epsilon=self.layernorm_eps)
+    self.ln1 = LayerNorm(epsilon=self.layernorm_eps, dtype=dtype)
     self.qkv_projection = DenseLayer(3 * self.hidden_size, dtype=dtype)
 
     self.kv_channels = self.hidden_size // self.num_attention_heads
@@ -139,7 +164,7 @@ class BasicTransformer(nn.Module):
 
     self.projection = DenseLayer(self.hidden_size, dtype=dtype)
     self.dropout = nn.Dropout(self.hidden_dropout, deterministic=True)
-    self.ln2 = nn.LayerNorm(epsilon=self.layernorm_eps)
+    self.ln2 = LayerNorm(epsilon=self.layernorm_eps, dtype=dtype)
     self.mlp = BasicMLP(
         hidden_size=self.hidden_size,
         ffn_hidden_size=self.ffn_hidden_size,
@@ -194,35 +219,19 @@ def run_benchmark():
   initialized_var = basic_transformer.init(key, x_data)
   opt = optax.adam(learning_rate=0.1)
   ts_args = {'tx': opt, 'apply_fn': basic_transformer.apply}
-  if use_fp8:
-    ts_args['model_variables'] = initialized_var
-    ts_args['validate_axes'] = False
-  else:
-    ts_args['params'] = initialized_var
-
+  ts_args['model_variables' if use_fp8 else 'params'] = initialized_var
   state = TrainState.create(**ts_args)
 
   def step_fn(state, x, labels):
-    def loss_fn(diff_vars, x, labels, mutable_vars=None):
-      if use_fp8:
-        y, _ = state.apply_fn({**diff_vars, **mutable_vars}, x,
-                              mutable=['fp8_params'])
-      else:  
-        y = state.apply_fn(diff_vars, x)
+    def loss_fn(vars, x, labels):
+      y = state.apply_fn(vars, x)
       loss = jnp.mean(jnp.square(y - labels))
       return loss
 
-    grad_fn = jax.value_and_grad(loss_fn,
-                                 argnums=[0, 3] if use_fp8 else [0])
-
-    if use_fp8:
-      state_var = state.variables()
-      flax_mutables = state.mutable_variables()
-      loss, grads = grad_fn(state_var, x_data, y_data, flax_mutables)
-      state = state.apply_gradients(grads=grads[0], flax_mutables=grads[1])
-    else:
-      loss, grads = grad_fn(state.params, x_data, y_data)
-      state = state.apply_gradients(grads=grads[0])
+    grad_fn = jax.value_and_grad(loss_fn, argnums=[0, 1])
+    loss, grads = grad_fn(state.model_variables if use_fp8 else state.params,
+                          x_data, y_data)
+    state = state.apply_gradients(grads=grads[0])
     return state, loss
 
   pjit_train_step_fn = pjit(step_fn)

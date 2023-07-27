@@ -70,6 +70,26 @@ class PartitionTest(jtu.JaxTestCase):
              ('fp8_meta', None))
 
     hlo_text = get_hlo_text(rules)
+    self.assertRegex(
+        hlo_text, re.compile('.*'.join([re.escape(x) for x in (
+            'cublas',
+            'f32[2048,8192]{1,0}',
+            'custom-call',
+            'f8e4m3fn[2048,8192]{1,0}',
+            'f8e4m3fn[8192,8192]{1,0}',
+            'epilogue',
+            'DEFAULT',
+        )])), msg='y tensor')
+    self.assertRegex(
+        hlo_text, re.compile('.*'.join([re.escape(x) for x in (
+            'cublas',
+            'f32[8192,8192]{1,0}',
+            'custom-call',
+            'f8e4m3fn[8192,2048]{1,0}',
+            'f8e5m2[8192,2048]{1,0}',
+            'epilogue',
+            'DEFAULT',
+        )])), msg='dw tensor')
 
     # The all-reduce for the input and output_grads follows the same replica
     # group. So, it accepts two operands and return a tuple.
@@ -103,13 +123,33 @@ class PartitionTest(jtu.JaxTestCase):
 
     self.assertRegex(
         hlo_text, re.compile('.*'.join([re.escape(x) for x in (
+            'cublas',
+            'f32[8192,8192]{1,0}',
+            'custom-call',
+            'f8e4m3fn[8192,4096]{1,0}',
+            'f8e4m3fn[8192,4096]{1,0}',
+            'epilogue',
+            'DEFAULT',
+        )])), msg='y tensor')
+    self.assertRegex(
+        hlo_text, re.compile('.*'.join([re.escape(x) for x in (
+            'cublas',
+            'f32[4096,8192]{1,0}',
+            'custom-call',
+            'f8e4m3fn[4096,8192]{1,0}',
+            'f8e5m2[8192,8192]{1,0}',
+            'epilogue',
+            'DEFAULT',
+        )])), msg='dw tensor')
+
+    self.assertRegex(
+        hlo_text, re.compile('.*'.join([re.escape(x) for x in (
             'all-reduce',
             'f32[]', # output
             'all-reduce',
             'f32[]', # input
             'replica_groups={{0,1},{2,3},{4,5},{6,7}}',
         )])), msg="all-reduce on kernel amax")
-
     self.assertRegex(
           hlo_text, re.compile('.*'.join([re.escape(x) for x in (
               'all-reduce',
@@ -128,7 +168,28 @@ class PartitionTest(jtu.JaxTestCase):
 
     hlo_text = get_hlo_text(rules)
 
-    # The all-reduce for the kernel and output_grads follows the same replica
+    self.assertRegex(
+        hlo_text, re.compile('.*'.join([re.escape(x) for x in (
+            'cublas',
+            'f32[8192,4096]{1,0}',
+            'custom-call',
+            'f8e4m3fn[8192,8192]{1,0}',
+            'f8e4m3fn[4096,8192]{1,0}',
+            'epilogue',
+            'DEFAULT',
+        )])), msg='y tensor')
+    self.assertRegex(
+        hlo_text, re.compile('.*'.join([re.escape(x) for x in (
+            'cublas',
+            'f32[8192,4096]{1,0}',
+            'custom-call',
+            'f8e4m3fn[8192,8192]{1,0}',
+            'f8e5m2[4096,8192]{1,0}',
+            'epilogue',
+            'DEFAULT',
+        )])), msg='dw tensor')
+
+   # The all-reduce for the kernel and output_grads follows the same replica
     # group. So, it accepts two operands and return a tuple.
     self.assertRegex(
         hlo_text, re.compile('.*'.join([re.escape(x) for x in (
@@ -151,6 +212,27 @@ class PartitionTest(jtu.JaxTestCase):
     hlo_text = get_hlo_text(rules)
     
     self.assertRegex(
+        hlo_text, re.compile('.*'.join([re.escape(x) for x in (
+            'cublas',
+            'f32[2048,8192]{1,0}',
+            'custom-call',
+            'f8e4m3fn[2048,4096]{1,0}',
+            'f8e4m3fn[8192,4096]{1,0}',
+            'epilogue',
+            'DEFAULT',
+        )])), msg='y tensor')
+    self.assertRegex(
+        hlo_text, re.compile('.*'.join([re.escape(x) for x in (
+            'cublas',
+            'f32[4096,8192]{1,0}',
+            'custom-call',
+            'f8e4m3fn[4096,2048]{1,0}',
+            'f8e5m2[8192,2048]{1,0}',
+            'epilogue',
+            'DEFAULT',
+        )])), msg='dw tensor')
+
+    self.assertRegex(
           hlo_text, re.compile('.*'.join([re.escape(x) for x in (
               'all-reduce',
               'f32[]', # output
@@ -170,7 +252,6 @@ class PartitionTest(jtu.JaxTestCase):
               'f32[]', # input
               'replica_groups={{0,2,4,6},{1,3,5,7}}',
           )])), msg="all-reduce on input and output_grads amax")
-
     self.assertRegex(
           hlo_text, re.compile('.*'.join([re.escape(x) for x in (
               'all-reduce',
@@ -197,6 +278,27 @@ class PartitionTest(jtu.JaxTestCase):
              ('mlp', 'model'))
 
     hlo_text = get_hlo_text(rules)
+
+    self.assertRegex(
+        hlo_text, re.compile('.*'.join([re.escape(x) for x in (
+            'cublas',
+            'f32[2048,4096]{1,0}',
+            'custom-call',
+            'f8e4m3fn[2048,8192]{1,0}',
+            'f8e4m3fn[4096,8192]{1,0}',
+            'epilogue',
+            'DEFAULT',
+        )])), msg='y tensor')
+    self.assertRegex(
+        hlo_text, re.compile('.*'.join([re.escape(x) for x in (
+            'cublas',
+            'f32[8192,4096]{1,0}',
+            'custom-call',
+            'f8e4m3fn[8192,2048]{1,0}',
+            'f8e5m2[4096,2048]{1,0}',
+            'epilogue',
+            'DEFAULT',
+        )])), msg='dw tensor')
 
     self.assertRegex(
           hlo_text, re.compile('.*'.join([re.escape(x) for x in (
@@ -246,7 +348,28 @@ class PartitionTest(jtu.JaxTestCase):
              ('hidden', 'model'))
 
     hlo_text = get_hlo_text(rules)
-    
+
+    self.assertRegex(
+        hlo_text, re.compile('.*'.join([re.escape(x) for x in (
+            'cublas',
+            'f32[2048,8192]{1,0}',
+            'custom-call',
+            'f8e4m3fn[2048,4096]{1,0}',
+            'f8e4m3fn[8192,4096]{1,0}',
+            'epilogue',
+            'DEFAULT',
+        )])), msg='y tensor')
+    self.assertRegex(
+        hlo_text, re.compile('.*'.join([re.escape(x) for x in (
+            'cublas',
+            'f32[4096,8192]{1,0}',
+            'custom-call',
+            'f8e4m3fn[4096,2048]{1,0}',
+            'f8e5m2[8192,2048]{1,0}',
+            'epilogue',
+            'DEFAULT',
+        )])), msg='dw tensor')
+
     self.assertRegex(
           hlo_text, re.compile('.*'.join([re.escape(x) for x in (
               'all-reduce',
@@ -304,7 +427,7 @@ class PartitionTest(jtu.JaxTestCase):
              ('mlp', 'model'))
 
     hlo_text = get_hlo_text(rules)
-
+    # TODO(shuw): Add type check when all-gather is included in whitelist.
     # The all-reduce for the amax follows the same replica group.
     self.assertRegex(
         hlo_text, re.compile('.*'.join([re.escape(x) for x in (

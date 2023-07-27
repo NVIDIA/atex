@@ -9,6 +9,7 @@ import re
 import optax
 
 import jax._src.test_util as jtu
+from jax import grad
 from jax import jit
 from jax import lax
 from jax import numpy as jnp
@@ -451,15 +452,22 @@ class DenseTest(jtu.JaxTestCase):
     variables = dense.init(key, x)
 
     opt = optax.adam(learning_rate=.1)
-    state = TrainState.create(model_variables=variables, tx=opt, apply_fn=None)
+    state = TrainState.create(model_variables=variables, tx=opt,
+                              apply_fn=dense.apply)
 
-    def _train_loss(variables, x, dy, flax_mutables):
-      y, updated_mutables = dense.apply({**variables, **flax_mutables}, x, 
-                                        mutable=['fp8_params'])
-      loss = y * dy.astype(y.dtype)
-      return jnp.sum(loss), updated_mutables
+    def _train_loss(state, x, dy):
+      def loss_fn(params):
+        y = state.apply_fn(params, x)
+        loss = y * dy.astype(y.dtype)
+        return jnp.sum(loss)
 
-    train_fn = jit(value_and_grad(_train_loss, has_aux=True, argnums=[0, 3]))
+      grad_fn = grad(loss_fn)
+      grads = grad_fn(state.model_variables)
+
+      state = state.apply_gradients(grads=grads)
+      return state
+
+    train_fn = jit(_train_loss)
 
     amax_history_x = jnp.zeros((dense.amax_history_length,))
     amax_history_k = jnp.zeros((dense.amax_history_length,))
@@ -473,12 +481,11 @@ class DenseTest(jtu.JaxTestCase):
     for _ in range(5):
       x = random.normal(random.PRNGKey(1), (16, 16), dtype=jnp.float32)
       dy = random.normal(random.PRNGKey(1), (16, 32), dtype=jnp.float32)
-      (loss_val, _), grads = train_fn(state.variables(), x, dy, 
-                                      state.mutable_variables())
 
       amax_history_x = roll_and_update(amax_history_x, jnp.max(jnp.abs(x)))
       amax_history_k = roll_and_update(
-          amax_history_k, jnp.max(jnp.abs(state.params['kernel'])))
+          amax_history_k,
+          jnp.max(jnp.abs(state.model_variables['params']['kernel'])))
       amax_history_dy = roll_and_update(amax_history_dy, jnp.max(jnp.abs(dy)))
 
       amax_from_history_x = jnp.max(amax_history_x, axis=0)
@@ -488,11 +495,10 @@ class DenseTest(jtu.JaxTestCase):
       scale_k = compute_scale(amax_from_history_k, scale_k, fp8_e4m3_max)
       scale_dy = compute_scale(amax_from_history_dy, scale_dy, fp8_e5m2_max)
 
-      state = state.apply_gradients(grads=grads[0], 
-                                    flax_mutables=grads[1])
+      state = train_fn(state, x, dy)
 
       rtol, atol = 0.001, 0.001
-      fp8_vars = state.mutable_variables()['fp8_params']
+      fp8_vars = state.model_variables['fp8_params']
       self.assertAllClose(fp8_vars['input_amax_history'],
                           amax_history_x, rtol=rtol, atol=atol)
       self.assertAllClose(fp8_vars['kernel_amax_history'],

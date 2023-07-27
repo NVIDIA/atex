@@ -28,6 +28,9 @@
 
 from .fp8_module.dense import DenseGeneral
 from .fp8_module.train_state import TrainState
-from .fp8_module.fp8 import in_qdq
-from .fp8_module.fp8 import out_qdq
+from .fp8_module.fp8 import fp8_dot
+from .fp8_module.fp8 import fp8_projection
+from .fp8_module.fp8 import fp8_qkv_combined_projection
+from .fp8_module.fp8 import fp8_qkv_projection
+from .fp8_module.fp8 import fp8_attention_output_projection
 

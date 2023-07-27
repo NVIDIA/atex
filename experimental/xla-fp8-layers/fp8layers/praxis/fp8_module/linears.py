@@ -1,33 +1,24 @@
 """Linear layers."""
 
-from functools import partial
-from typing import Optional, Tuple, Union, Iterable
+from typing import Optional
 
-from jax import lax
 from jax import numpy as jnp
+from jax.ad_checkpoint import checkpoint_name
 from praxis import base_layer
 from praxis import pax_fiddle
 from praxis import py_utils
 from praxis import pytypes
 from praxis.layers import activations
 from praxis.layers import base_ops
-from praxis.layers import flax_adapter
 
-from fp8layers.flax import DenseGeneral
+from fp8layers.flax import fp8_dot
 
+NestedMap = py_utils.NestedMap
 WeightInit = base_layer.WeightInit
 WeightHParams = base_layer.WeightHParams
 template_field = base_layer.template_field
 LayerTpl = pax_fiddle.Config[base_layer.BaseLayer]
 JTensor = pytypes.JTensor
-
-
-def generate_params_init(name: str, initializer: WeightInit):
-   """Convert praxis init to flax-friendly init"""
-   def kernel_init(key, shape, dtype):
-     wp = WeightHParams(shape=shape, init=initializer, dtype=dtype)
-     return base_layer.init_var(wp, key, name)
-   return kernel_init
 
 class Linear(base_layer.BaseLayer):
   """Linear Fp8 layer without bias.
@@ -38,45 +29,87 @@ class Linear(base_layer.BaseLayer):
   """
   input_dims: int = 0
   output_dims: int = 0
-  kernel_axes: Tuple[str, ...] = ()
-  weight_init: Optional[WeightInit] = WeightInit.Xavier(scale=1.0)
-  axis: Union[Iterable[int], int] = -1
   amax_history_length: int = 16
-  logical_axes_rules: Tuple[Tuple, ...] = None
-
-  def create_layer(self, name, flax_module_cls):
-    """create_layer"""
-    flax_module_p = pax_fiddle.Config(
-        flax_adapter.FlaxModuleAdapter,
-        module_factory_method=flax_module_cls,
-        logical_axes_rules=self.logical_axes_rules,
-        ici_mesh_shape=self.ici_mesh_shape,
-        dcn_mesh_shape=self.dcn_mesh_shape,
-        mesh_axis_names=self.mesh_axis_names)
-
-    self.create_child(name, flax_module_p.clone())
+  weight_init: Optional[WeightInit] = None
 
   def setup(self) -> None:
-    """setup"""
-    super().setup()
+    wp = self.weight_split_dims_mapping
+    self.create_variable(
+        'w',
+        WeightHParams(
+            shape=[self.input_dims, self.output_dims],
+            init=self.weight_init,
+            mesh_shape=self.mesh_shape,
+            tensor_split_dims_mapping=wp.wt,
+        ),
+    )
 
-    dense_general_cls = partial(
-        DenseGeneral,
-        features=self.output_dims,
-        kernel_axes=self.kernel_axes,
-        kernel_init=generate_params_init('kernel', self.weight_init),
-        amax_history_length=self.amax_history_length,
-        use_bias=False,
-        bias_axes=None,
-        axis=self.axis,
-        dtype=self.dtype)
+    scale_args = {
+        'shape': [1],
+        'init': WeightInit.Constant(1.0),
+        'dtype': jnp.float32,
+        'mesh_shape': self.mesh_shape,
+        'tensor_split_dims_mapping': None,
+        'collections': ['fp8_params'],
+    }
+    amax_history_args = {
+        'shape': [self.amax_history_length],
+        'init': WeightInit.Constant(0.0),
+        'dtype': jnp.float32,
+        'mesh_shape': self.mesh_shape,
+        'tensor_split_dims_mapping': None,
+        'collections': ['fp8_params'],
+    }
+    self.create_variable(
+        'input_amax_history', WeightHParams(**amax_history_args))
+    self.create_variable(
+        'kernel_amax_history', WeightHParams(**amax_history_args))
+    self.create_variable(
+        'output_grad_amax_history', WeightHParams(**amax_history_args))
 
-    self.create_layer("linear", dense_general_cls)
+    self.create_variable('input_scale', WeightHParams(**scale_args))
+    self.create_variable('kernel_scale', WeightHParams(**scale_args))
+    self.create_variable(
+         'output_grad_scale', WeightHParams(**scale_args))
 
-  def __call__(self, x: JTensor) -> JTensor:
-    """__call__"""
-    return self.linear(x)
+  def __call__(self, inputs: JTensor) -> JTensor:
+    """Apply projection to inputs.
 
+    Args:
+      inputs: The inputs JTensor.  Shaped [..., input_dims].
+
+    Returns:
+      Projected inputs.
+    """
+    ap = self.activation_split_dims_mapping
+
+    original_shape = inputs.shape
+    assert len(original_shape) >= 2
+
+    comp_dtype = self.fprop_dtype
+    inputs = jnp.asarray(inputs, comp_dtype)
+    kernel = jnp.asarray(self.theta.w, comp_dtype)
+
+    # Reshape the inputs to 2D matrix to call the fp8_dot. The result will be
+    # casted back at the end.
+    inp = jnp.reshape(inputs, (-1, self.input_dims))
+
+    out = fp8_dot(inp, kernel, comp_dtype,
+                  self.theta.input_scale, self.theta.input_amax_history,
+                  self.theta.kernel_scale, self.theta.kernel_amax_history,
+                  self.theta.output_grad_scale,
+                  self.theta.output_grad_amax_history)
+
+    # Reshape back the outputs.
+    out = jnp.reshape(out, (*original_shape[0:-1], self.output_dims))
+
+    # Adjust sharding annotation during decoding.
+    # TODO(pax): This logic should likely be lifted somewhere else.
+    ap_out = ap.out
+    if ap_out is not None and len(ap_out) == 3 and out.ndim == 2:
+      ap_out = [ap_out[0], ap_out[2]]
+    out = base_layer.maybe_shard(out, ap_out, self.mesh_axis_names)
+    return out
 
 class Bias(base_layer.BaseLayer):
   """Bias layer.
@@ -122,6 +155,7 @@ class FeedForward(base_layer.BaseLayer):
     linear_tpl: Linear layer params.
     activation_tpl: Activation layer params.
     bias_init: Init scale (constant) of bias terms.
+    checkpoint_str: name to checkpoint the tensor output from nn.linear.
   """
   input_dims: int = 0
   output_dims: int = 0
@@ -133,6 +167,7 @@ class FeedForward(base_layer.BaseLayer):
   ] = template_field(activations.ReLU)
   weight_init: Optional[WeightInit] = None
   bias_init: Optional[float] = 0.0
+  checkpoint_str: str | None = None
 
   def setup(self) -> None:
     wp = self.weight_split_dims_mapping
@@ -164,10 +199,15 @@ class FeedForward(base_layer.BaseLayer):
 
   def __call__(self, inputs: JTensor) -> JTensor:
     projected_inputs = self.linear(inputs)
+    if self.checkpoint_str is not None:
+      projected_inputs = checkpoint_name(projected_inputs, self.checkpoint_str)
     if self.has_bias:
       # Cublas fp8 matmul only supports bf16 bias for fp32 IO. For pattern
-      # matching, we cast the bias to bf16 back and forth.
-      if self.bias.dtype == jnp.float32:
+      # matching, we cast the bias to bf16 back and forth. For now, we only do
+      # this when the input shape is 2D, when there is no extra
+      # reshape/transpose in-between the matmul and bias_add.
+      if (len(inputs.shape) == 2 and self.bias.dtype == jnp.float32 and
+          self.bias.fprop_dtype == jnp.float32):
         bias = self.bias.theta.b.astype(jnp.bfloat16)
         bias = bias.astype(jnp.float32)
         projected_inputs = projected_inputs + bias
